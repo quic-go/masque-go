@@ -91,7 +91,7 @@ func (c *Client) DialIP(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn
 	}
 	if err := rstr.SendRequestHeader(&http.Request{
 		Method: http.MethodConnect,
-		Proto:  protocolHeader,
+		Proto:  requestProtocol,
 		Host:   u.Host,
 		Header: http.Header{capsuleHeader: []string{capsuleProtocolHeaderValue}},
 		URL:    u,

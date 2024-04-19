@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	protocolHeader = "connect-udp"
-	capsuleHeader  = "capsule-protocol"
+	requestProtocol = "connect-udp"
+	capsuleHeader   = "capsule-protocol"
 )
 
 const (
@@ -46,7 +46,7 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodConnect {
 		return fmt.Errorf("expected CONNECT request, got %s", r.Method)
 	}
-	if r.Proto != protocolHeader {
+	if r.Proto != requestProtocol {
 		return fmt.Errorf("unexpected protocol: %s", r.Proto)
 	}
 	// TODO: check :authority
@@ -56,18 +56,15 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	targetHostEncoded := match.Get(uriTemplateTargetHost).String()
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
 	if targetHostEncoded == "" || targetPortStr == "" {
-		w.WriteHeader(http.StatusBadRequest)
 		return fmt.Errorf("expected target_host and target_port")
 	}
 	targetHost, err := url.QueryUnescape(targetHostEncoded)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
 		return fmt.Errorf("failed to decode target_host: %w", err)
 	}
 	targetPort, err := strconv.Atoi(targetPortStr)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return fmt.Errorf("failed to decode target_port: %w", err)
+		return errors.New("failed to decode target_port")
 	}
 	w.Header().Set(capsuleHeader, capsuleProtocolHeaderValue)
 
@@ -83,6 +80,5 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	w.WriteHeader(http.StatusOK)
-
 	return nil
 }
