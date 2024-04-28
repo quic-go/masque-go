@@ -18,6 +18,22 @@ import (
 )
 
 func TestProxy(t *testing.T) {
+	remoteServerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	go func() {
+		for {
+			b := make([]byte, 1500)
+			n, addr, err := remoteServerConn.ReadFrom(b)
+			if err != nil {
+				return
+			}
+			if _, err := remoteServerConn.WriteTo(b[:n], addr); err != nil {
+				return
+			}
+		}
+	}()
+	defer remoteServerConn.Close()
+
 	laddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	require.NoError(t, err)
 	conn, err := net.ListenUDP("udp", laddr)
@@ -53,7 +69,14 @@ func TestProxy(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	proxied, err := cl.DialIP(ctx, conn.LocalAddr().(*net.UDPAddr))
+	proxiedConn, err := cl.DialIP(ctx, remoteServerConn.LocalAddr().(*net.UDPAddr))
 	require.NoError(t, err)
-	_ = proxied
+
+	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
+	require.NoError(t, err)
+
+	b := make([]byte, 1500)
+	n, _, err := proxiedConn.ReadFrom(b)
+	require.NoError(t, err)
+	require.Equal(t, []byte("foobar"), b[:n])
 }

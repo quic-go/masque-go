@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -78,7 +79,47 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		w.WriteHeader(http.StatusForbidden)
 		return errors.New("forbidden")
 	}
-
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return err
+	}
+	str := w.(http3.HTTPStreamer).HTTPStream()
+	go func() {
+		if err := s.proxyConnSend(conn, str); err != nil {
+			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
+		}
+	}()
+	go func() {
+		if err := s.proxyConnReceive(conn, str); err != nil {
+			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
+		}
+	}()
 	w.WriteHeader(http.StatusOK)
-	return nil
+	select {} // TODO: return
+}
+
+func (s *Server) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
+	for {
+		data, err := str.ReceiveDatagram(context.Background())
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Write(data); err != nil {
+			return err
+		}
+	}
+}
+
+func (s *Server) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
+	b := make([]byte, 1500)
+	for {
+		n, err := conn.Read(b)
+		if err != nil {
+			return err
+		}
+		if err := str.SendDatagram(b[:n]); err != nil {
+			return err
+		}
+	}
 }

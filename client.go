@@ -5,14 +5,15 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
-	"github.com/yosida95/uritemplate/v3"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/yosida95/uritemplate/v3"
 )
 
 type Client struct {
@@ -98,14 +99,18 @@ func (c *Client) DialIP(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn
 	}); err != nil {
 		return nil, fmt.Errorf("masque: failed to send request: %w", err)
 	}
-	// TODO: return a connection
+	// TODO: optimistically return this connection
+	pconn := &proxiedConn{
+		str:        rstr,
+		localAddr:  conn.LocalAddr(),
+		remoteAddr: raddr,
+	}
 	rsp, err := rstr.ReadResponse()
 	if err != nil {
 		return nil, fmt.Errorf("masque: failed to read response: %w", err)
 	}
-	fmt.Println(rsp)
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
-	return nil, nil
+	return pconn, nil
 }
