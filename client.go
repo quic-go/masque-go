@@ -81,7 +81,7 @@ func (c *Client) DialIP(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn
 	if !settings.EnableExtendedConnect {
 		return nil, errors.New("masque: server didn't enable Extended CONNECT")
 	}
-	if !settings.EnableDatagram {
+	if !settings.EnableDatagrams {
 		return nil, errors.New("masque: server didn't enable Datagrams")
 	}
 
