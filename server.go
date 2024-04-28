@@ -95,8 +95,7 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 	}()
-	w.WriteHeader(http.StatusOK)
-	select {} // TODO: return
+	return nil
 }
 
 func (s *Server) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {

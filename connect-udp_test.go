@@ -54,8 +54,11 @@ func TestProxy(t *testing.T) {
 		Allow:    func(context.Context, *net.UDPAddr) bool { return true },
 	}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		err := server.Upgrade(w, r)
-		fmt.Println("upgrade:", err)
+		if err := server.Upgrade(w, r); err != nil {
+			t.Log("Upgrade failed:", err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
