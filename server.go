@@ -45,9 +45,11 @@ type Server struct {
 
 func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodConnect {
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		return fmt.Errorf("expected CONNECT request, got %s", r.Method)
 	}
 	if r.Proto != requestProtocol {
+		w.WriteHeader(http.StatusNotImplemented)
 		return fmt.Errorf("unexpected protocol: %s", r.Proto)
 	}
 	// TODO: check :authority
@@ -57,14 +59,17 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	targetHostEncoded := match.Get(uriTemplateTargetHost).String()
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
 	if targetHostEncoded == "" || targetPortStr == "" {
+		w.WriteHeader(http.StatusBadRequest)
 		return fmt.Errorf("expected target_host and target_port")
 	}
 	targetHost, err := url.QueryUnescape(targetHostEncoded)
 	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
 		return fmt.Errorf("failed to decode target_host: %w", err)
 	}
 	targetPort, err := strconv.Atoi(targetPortStr)
 	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
 		return errors.New("failed to decode target_port")
 	}
 	w.Header().Set(capsuleHeader, capsuleProtocolHeaderValue)

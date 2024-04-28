@@ -24,31 +24,35 @@ func TestUpgradeFailures(t *testing.T) {
 
 	t.Run("wrong request method", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://localhost:1234/masque", nil)
-		err := s.Upgrade(httptest.NewRecorder(), req)
-		require.EqualError(t, err, "expected CONNECT request, got GET")
+		rec := httptest.NewRecorder()
+		require.EqualError(t, s.Upgrade(rec, req), "expected CONNECT request, got GET")
+		require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	})
 
 	t.Run("wrong protocol", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://localhost:1234/masque", nil)
 		req.Method = http.MethodConnect
 		req.Proto = "not-connect-udp"
-		err := s.Upgrade(httptest.NewRecorder(), req)
-		require.EqualError(t, err, "unexpected protocol: not-connect-udp")
+		rec := httptest.NewRecorder()
+		require.EqualError(t, s.Upgrade(rec, req), "unexpected protocol: not-connect-udp")
+		require.Equal(t, http.StatusNotImplemented, rec.Code)
 	})
 
 	t.Run("missing target host", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://localhost:1234/masque?h=&p=1234", nil)
 		req.Method = http.MethodConnect
 		req.Proto = requestProtocol
-		err := s.Upgrade(httptest.NewRecorder(), req)
-		require.EqualError(t, err, "expected target_host and target_port")
+		rec := httptest.NewRecorder()
+		require.EqualError(t, s.Upgrade(rec, req), "expected target_host and target_port")
+		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
 	t.Run("invalid target port", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "https://localhost:1234/masque?h=localhost&p=foobar", nil)
 		req.Method = http.MethodConnect
 		req.Proto = requestProtocol
-		err := s.Upgrade(httptest.NewRecorder(), req)
-		require.EqualError(t, err, "failed to decode target_port")
+		rec := httptest.NewRecorder()
+		require.EqualError(t, s.Upgrade(rec, req), "failed to decode target_port")
+		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 }
