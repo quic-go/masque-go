@@ -17,7 +17,7 @@ import (
 
 const (
 	requestProtocol = "connect-udp"
-	capsuleHeader   = "capsule-protocol"
+	capsuleHeader   = "Capsule-Protocol"
 )
 
 const (
@@ -53,7 +53,20 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("unexpected protocol: %s", r.Proto)
 	}
 	// TODO: check :authority
-	// TODO: check for capsule protocol header
+	capsuleHeaderValues, ok := r.Header[capsuleHeader]
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return fmt.Errorf("missing Capsule-Protocol header")
+	}
+	item, err := httpsfv.UnmarshalItem(capsuleHeaderValues)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return fmt.Errorf("invalid capsule header value: %s", r.Header[capsuleHeader])
+	}
+	if v, ok := item.Value.(int64); !ok || v != 1 {
+		w.WriteHeader(http.StatusBadRequest)
+		return fmt.Errorf("incorrect capsule header value: %d", v)
+	}
 
 	match := s.Template.Match(r.URL.String())
 	targetHostEncoded := match.Get(uriTemplateTargetHost).String()
