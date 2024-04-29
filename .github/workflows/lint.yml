@@ -24,6 +24,9 @@ jobs:
           go mod tidy
           diff go.mod go.mod.orig
           diff go.sum go.sum.orig
+      - name: Run code generators
+        if: success() || failure() # run this step even if the previous one failed
+        run: .github/workflows/go-generate.sh
       - name: gofmt
         if: success() || failure() # run this step even if the previous one failed
         run: |
