@@ -2,7 +2,6 @@ package masque
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"time"
 
@@ -29,17 +28,14 @@ func (c *proxiedConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 	return n, c.remoteAddr, nil
 }
 
-func (c *proxiedConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+func (c *proxiedConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
 	// A CONNECT-UDP connection mirrors a connected UDP socket.
-	if addr != c.remoteAddr {
-		return 0, fmt.Errorf("unexpected remote address: %s, expected %s", addr, c.remoteAddr)
-	}
+	// TODO: it's not clear what to do with the net.Addr here
 	return len(p), c.str.SendDatagram(p)
 }
 
 func (c *proxiedConn) Close() error {
-	// TODO implement me
-	panic("implement me")
+	return c.str.Close()
 }
 
 func (c *proxiedConn) LocalAddr() net.Addr {

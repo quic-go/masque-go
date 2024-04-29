@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/dunglas/httpsfv"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/quicvarint"
 	"github.com/yosida95/uritemplate/v3"
 )
 
@@ -103,17 +106,50 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	str := w.(http3.HTTPStreamer).HTTPStream()
+	go s.handleConn(conn, str)
+	return nil
+}
+
+func (s *Server) handleConn(conn *net.UDPConn, str http3.Stream) {
+	var closing atomic.Bool
 	go func() {
-		if err := s.proxyConnSend(conn, str); err != nil {
+		err := s.proxyConnSend(conn, str)
+		if err != nil && !closing.Load() {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
+		str.Close()
+		conn.Close()
 	}()
 	go func() {
-		if err := s.proxyConnReceive(conn, str); err != nil {
+		err := s.proxyConnReceive(conn, str)
+		if err != nil && !closing.Load() {
 			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
+		str.Close()
+		conn.Close()
 	}()
-	return nil
+
+	// discard all capsules sent on the request stream
+	err := skipCapsules(quicvarint.NewReader(str))
+	closing.Store(true)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		log.Printf("reading from request stream failed: %v", err)
+	}
+	str.Close()
+	conn.Close()
+}
+
+func skipCapsules(str quicvarint.Reader) error {
+	for {
+		ct, r, err := http3.ParseCapsule(str)
+		if err != nil {
+			return err
+		}
+		log.Printf("skipping capsule of type %d", ct)
+		if _, err := io.Copy(io.Discard, r); err != nil {
+			return err
+		}
+	}
 }
 
 func (s *Server) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
