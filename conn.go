@@ -3,11 +3,15 @@ package masque
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/quicvarint"
 )
 
 type proxiedConn struct {
@@ -15,6 +19,7 @@ type proxiedConn struct {
 	localAddr  net.Addr
 	remoteAddr net.Addr
 
+	closed   atomic.Bool // set when Close is called
 	readDone chan struct{}
 }
 
@@ -29,11 +34,8 @@ func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
 	}
 	go func() {
 		defer close(c.readDone)
-		// TODO: parse capsules
-		for {
-			if _, err := c.str.Read([]byte{0}); err != nil {
-				return
-			}
+		if err := skipCapsules(quicvarint.NewReader(str)); err != io.EOF && !c.closed.Load() {
+			log.Printf("reading from request stream failed: %v", err)
 		}
 	}()
 	return c
@@ -60,6 +62,7 @@ func (c *proxiedConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (c *proxiedConn) Close() error {
+	c.closed.Store(true)
 	c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
 	err := c.str.Close()
 	<-c.readDone
@@ -83,4 +86,17 @@ func (c *proxiedConn) SetReadDeadline(t time.Time) error {
 func (c *proxiedConn) SetWriteDeadline(t time.Time) error {
 	// TODO implement me
 	panic("implement me")
+}
+
+func skipCapsules(str quicvarint.Reader) error {
+	for {
+		ct, r, err := http3.ParseCapsule(str)
+		if err != nil {
+			return err
+		}
+		log.Printf("skipping capsule of type %d", ct)
+		if _, err := io.Copy(io.Discard, r); err != nil {
+			return err
+		}
+	}
 }
