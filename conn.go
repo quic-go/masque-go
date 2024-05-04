@@ -6,6 +6,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -13,9 +14,30 @@ type proxiedConn struct {
 	str        http3.Stream
 	localAddr  net.Addr
 	remoteAddr net.Addr
+
+	readDone chan struct{}
 }
 
 var _ net.PacketConn = &proxiedConn{}
+
+func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
+	c := &proxiedConn{
+		str:        str,
+		localAddr:  local,
+		remoteAddr: remote,
+		readDone:   make(chan struct{}),
+	}
+	go func() {
+		defer close(c.readDone)
+		// TODO: parse capsules
+		for {
+			if _, err := c.str.Read([]byte{0}); err != nil {
+				return
+			}
+		}
+	}()
+	return c
+}
 
 func (c *proxiedConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 	data, err := c.str.ReceiveDatagram(context.Background())
@@ -38,8 +60,10 @@ func (c *proxiedConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (c *proxiedConn) Close() error {
-	// TODO implement me
-	panic("implement me")
+	c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+	err := c.str.Close()
+	<-c.readDone
+	return err
 }
 
 func (c *proxiedConn) LocalAddr() net.Addr {

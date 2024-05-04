@@ -7,6 +7,7 @@ require (
 	github.com/quic-go/quic-go v0.43.0
 	github.com/stretchr/testify v1.9.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
+	go.uber.org/goleak v1.3.0
 )
 
 require (

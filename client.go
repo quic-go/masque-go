@@ -99,12 +99,7 @@ func (c *Client) DialIP(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn
 	}); err != nil {
 		return nil, fmt.Errorf("masque: failed to send request: %w", err)
 	}
-	// TODO: optimistically return this connection
-	pconn := &proxiedConn{
-		str:        rstr,
-		localAddr:  conn.LocalAddr(),
-		remoteAddr: raddr,
-	}
+	// TODO: optimistically return the connection
 	rsp, err := rstr.ReadResponse()
 	if err != nil {
 		return nil, fmt.Errorf("masque: failed to read response: %w", err)
@@ -112,5 +107,13 @@ func (c *Client) DialIP(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
-	return pconn, nil
+	return newProxiedConn(rstr, conn.LocalAddr(), raddr), nil
+}
+
+func (c *Client) Close() error {
+	c.dialOnce.Do(func() {}) // wait for existing calls to finish
+	if c.conn != nil {
+		return c.conn.CloseWithError(0, "")
+	}
+	return nil
 }

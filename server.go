@@ -9,9 +9,13 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
+	"sync/atomic"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 
 	"github.com/dunglas/httpsfv"
-	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 )
 
@@ -35,15 +39,33 @@ func init() {
 	capsuleProtocolHeaderValue = v
 }
 
+type proxyEntry struct {
+	str  http3.Stream
+	conn *net.UDPConn
+}
+
 type Server struct {
 	http3.Server
 
 	Template *uritemplate.Template
 
 	Allow func(context.Context, *net.UDPAddr) bool
+
+	closed atomic.Bool
+
+	mx       sync.Mutex
+	refCount sync.WaitGroup // counter for the Go routines spawned in Upgrade
+	conns    map[proxyEntry]struct{}
 }
 
 func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
+	if s.closed.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+
+	s.refCount.Add(1)
+	defer s.refCount.Done()
+
 	if r.Method != http.MethodConnect {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return fmt.Errorf("expected CONNECT request, got %s", r.Method)
@@ -97,18 +119,36 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		w.WriteHeader(http.StatusForbidden)
 		return errors.New("forbidden")
 	}
+
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return err
 	}
 	str := w.(http3.HTTPStreamer).HTTPStream()
+
+	s.mx.Lock()
+	if s.closed.Load() {
+		str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+		str.Close()
+		conn.Close()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	if s.conns == nil {
+		s.conns = make(map[proxyEntry]struct{})
+	}
+	s.conns[proxyEntry{str: str, conn: conn}] = struct{}{}
+	s.refCount.Add(2)
+	s.mx.Unlock()
+
 	go func() {
+		defer s.refCount.Done()
 		if err := s.proxyConnSend(conn, str); err != nil {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 	}()
 	go func() {
+		defer s.refCount.Done()
 		if err := s.proxyConnReceive(conn, str); err != nil {
 			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
@@ -139,4 +179,19 @@ func (s *Server) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
 			return err
 		}
 	}
+}
+
+func (s *Server) Close() error {
+	s.closed.Store(true)
+	err := s.Server.Close()
+	s.mx.Lock()
+	for entry := range s.conns {
+		entry.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+		entry.str.Close()
+		entry.conn.Close()
+	}
+	s.conns = nil
+	s.mx.Unlock()
+	s.refCount.Wait()
+	return err
 }
