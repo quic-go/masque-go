@@ -37,6 +37,7 @@ func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
 		if err := skipCapsules(quicvarint.NewReader(str)); err != io.EOF && !c.closed.Load() {
 			log.Printf("reading from request stream failed: %v", err)
 		}
+		str.Close()
 	}()
 	return c
 }
