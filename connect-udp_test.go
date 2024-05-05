@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/quic-go/masque-go"
 
@@ -145,5 +146,13 @@ func TestProxyShutdown(t *testing.T) {
 	server.Close()
 	_, _, err = proxiedConn.ReadFrom(b)
 	require.Error(t, err)
-	// TODO: check that WriteTo errors as well, needs https://github.com/quic-go/quic-go/issues/4485
+	var errored bool
+	for i := 0; i < 10; i++ {
+		if _, err := proxiedConn.WriteTo(b, remoteServerConn.LocalAddr()); err != nil {
+			errored = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require.True(t, errored, "expected datagram write side to error")
 }
