@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/quicvarint"
 
 	"github.com/dunglas/httpsfv"
 	"github.com/yosida95/uritemplate/v3"
@@ -138,7 +140,7 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		s.conns = make(map[proxyEntry]struct{})
 	}
 	s.conns[proxyEntry{str: str, conn: conn}] = struct{}{}
-	s.refCount.Add(2)
+	s.refCount.Add(3)
 	s.mx.Unlock()
 
 	go func() {
@@ -146,12 +148,25 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		if err := s.proxyConnSend(conn, str); err != nil {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
+		str.Close()
+		conn.Close()
 	}()
 	go func() {
 		defer s.refCount.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil {
+		if err := s.proxyConnReceive(conn, str); err != nil && !s.closed.Load() {
 			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
+		str.Close()
+		conn.Close()
+	}()
+	go func() {
+		defer s.refCount.Done()
+		// discard all capsules sent on the request stream
+		if err := skipCapsules(quicvarint.NewReader(str)); err == io.EOF {
+			log.Printf("reading from request stream failed: %v", err)
+		}
+		str.Close()
+		conn.Close()
 	}()
 	return nil
 }
