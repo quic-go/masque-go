@@ -1,1 +1,3 @@
 coverage.txt
+*.qlog
+*.sqlog
