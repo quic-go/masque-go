@@ -48,7 +48,7 @@ func (s *http3ResponseWriter) HTTPStream() http3.Stream { return s.str }
 
 func TestUpgradeFailures(t *testing.T) {
 	mux := http.NewServeMux()
-	s := masque.Server{
+	s := masque.Proxy{
 		Server:   http3.Server{Handler: mux},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 	}
@@ -119,7 +119,7 @@ func TestServerCloseProxiedConn(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	s := masque.Server{
+	s := masque.Proxy{
 		Server:   http3.Server{Handler: mux},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 	}

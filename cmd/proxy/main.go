@@ -38,7 +38,7 @@ func main() {
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{
 		Certificates: []tls.Certificate{cert},
 	})
-	proxy := masque.Server{
+	proxy := masque.Proxy{
 		Template: template,
 		Server: http3.Server{
 			Addr:            bind,

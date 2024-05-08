@@ -53,7 +53,7 @@ func TestProxying(t *testing.T) {
 	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", conn.LocalAddr().(*net.UDPAddr).Port))
 
 	mux := http.NewServeMux()
-	server := masque.Server{
+	server := masque.Proxy{
 		Server: http3.Server{
 			TLSConfig:       tlsConf,
 			QUICConfig:      &quic.Config{EnableDatagrams: true},
@@ -104,7 +104,7 @@ func TestProxyShutdown(t *testing.T) {
 	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", conn.LocalAddr().(*net.UDPAddr).Port))
 
 	mux := http.NewServeMux()
-	server := masque.Server{
+	server := masque.Proxy{
 		Server: http3.Server{
 			TLSConfig:       tlsConf,
 			QUICConfig:      &quic.Config{EnableDatagrams: true},
