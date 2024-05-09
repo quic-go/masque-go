@@ -14,6 +14,13 @@ import (
 	"github.com/quic-go/quic-go/quicvarint"
 )
 
+type masqueAddr struct{ net.Addr }
+
+func (m masqueAddr) Network() string { return "connect-udp" }
+func (m masqueAddr) String() string  { return m.Addr.String() }
+
+var _ net.Addr = &masqueAddr{}
+
 type proxiedConn struct {
 	str        http3.Stream
 	localAddr  net.Addr
@@ -71,7 +78,7 @@ func (c *proxiedConn) Close() error {
 }
 
 func (c *proxiedConn) LocalAddr() net.Addr {
-	return c.localAddr
+	return &masqueAddr{c.localAddr}
 }
 
 func (c *proxiedConn) SetDeadline(t time.Time) error {
