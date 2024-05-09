@@ -16,6 +16,10 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
+// defaultInitialPacketSize is an increased packet size used for the connection to the proxy.
+// This allows tunneling QUIC connections, which themselves have a minimum MTU requirement of 1200 bytes.
+const defaultInitialPacketSize = 1350
+
 type Client struct {
 	Template        *uritemplate.Template
 	TLSClientConfig *tls.Config
@@ -46,7 +50,10 @@ func (c *Client) DialIP(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn
 	c.dialOnce.Do(func() {
 		quicConf := c.QUICConfig
 		if quicConf == nil {
-			quicConf = &quic.Config{EnableDatagrams: true}
+			quicConf = &quic.Config{
+				EnableDatagrams:   true,
+				InitialPacketSize: defaultInitialPacketSize,
+			}
 		}
 		if !quicConf.EnableDatagrams {
 			c.dialErr = errors.New("masque: QUICConfig needs to enable Datagrams")
