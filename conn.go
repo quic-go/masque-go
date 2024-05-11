@@ -60,8 +60,10 @@ func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
 }
 
 func (c *proxiedConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
-	data, err := c.str.ReceiveDatagram(c.readCtx)
-	// TODO: special case context cancellation errors, replace them with timeout errors
+	c.deadlineMx.Lock()
+	ctx := c.readCtx
+	c.deadlineMx.Unlock()
+	data, err := c.str.ReceiveDatagram(ctx)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			return 0, nil, err
@@ -127,6 +129,7 @@ func (c *proxiedConn) SetReadDeadline(t time.Time) error {
 	if c.readDeadlineTimer != nil {
 		// if that timer expired, create a new one
 		if now.Before(oldDeadline) {
+			c.readCtxCancel() // the old context might already have been cancelled, but that's not guaranteed
 			c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
 		}
 		c.readDeadlineTimer.Reset(deadline)
