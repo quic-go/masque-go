@@ -85,7 +85,7 @@ func TestReadDeadline(t *testing.T) {
 		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
-		})
+		}).MaxTimes(2) // might be called a 2nd time depending on when the cancellation Go routine does its job
 
 		start := time.Now()
 		d := scaleDuration(75 * time.Millisecond)
@@ -146,7 +146,7 @@ func TestReadDeadline(t *testing.T) {
 		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
-		}).Times(num)
+		}).MinTimes(num)
 
 		for i := 0; i < num; i++ {
 			// random duration between -5ms and 5ms

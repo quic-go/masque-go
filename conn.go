@@ -60,6 +60,7 @@ func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
 }
 
 func (c *proxiedConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
+start:
 	c.deadlineMx.Lock()
 	ctx := c.readCtx
 	c.deadlineMx.Unlock()
@@ -68,8 +69,14 @@ func (c *proxiedConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 		if !errors.Is(err, context.Canceled) {
 			return 0, nil, err
 		}
+		// The context is cancelled asynchronously (in a Go routine spawned from time.AfterFunc).
+		// We need to check if a new deadline has already been set.
 		c.deadlineMx.Lock()
-		defer c.deadlineMx.Unlock()
+		restart := time.Now().Before(c.deadline)
+		c.deadlineMx.Unlock()
+		if restart {
+			goto start
+		}
 		return 0, nil, os.ErrDeadlineExceeded
 	}
 	// If b is too small, additional bytes are discarded.
