@@ -107,8 +107,8 @@ func (c *proxiedConn) LocalAddr() net.Addr {
 }
 
 func (c *proxiedConn) SetDeadline(t time.Time) error {
-	// TODO implement me
-	panic("implement me")
+	_ = c.SetWriteDeadline(t)
+	return c.SetReadDeadline(t)
 }
 
 func (c *proxiedConn) SetReadDeadline(t time.Time) error {
@@ -152,9 +152,9 @@ func (c *proxiedConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (c *proxiedConn) SetWriteDeadline(t time.Time) error {
-	// TODO implement me
-	panic("implement me")
+func (c *proxiedConn) SetWriteDeadline(time.Time) error {
+	// TODO(#22): This is currently blocked on a change in quic-go's API.
+	return nil
 }
 
 func skipCapsules(str quicvarint.Reader) error {
