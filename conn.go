@@ -2,10 +2,13 @@ package masque
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +31,12 @@ type proxiedConn struct {
 
 	closed   atomic.Bool // set when Close is called
 	readDone chan struct{}
+
+	deadlineMx        sync.Mutex
+	readCtx           context.Context
+	readCtxCancel     context.CancelFunc
+	deadline          time.Time
+	readDeadlineTimer *time.Timer
 }
 
 var _ net.PacketConn = &proxiedConn{}
@@ -39,6 +48,7 @@ func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
 		remoteAddr: remote,
 		readDone:   make(chan struct{}),
 	}
+	c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
 	go func() {
 		defer close(c.readDone)
 		if err := skipCapsules(quicvarint.NewReader(str)); err != io.EOF && !c.closed.Load() {
@@ -50,10 +60,15 @@ func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
 }
 
 func (c *proxiedConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
-	data, err := c.str.ReceiveDatagram(context.Background())
+	data, err := c.str.ReceiveDatagram(c.readCtx)
 	// TODO: special case context cancellation errors, replace them with timeout errors
 	if err != nil {
-		return 0, nil, err
+		if !errors.Is(err, context.Canceled) {
+			return 0, nil, err
+		}
+		c.deadlineMx.Lock()
+		defer c.deadlineMx.Unlock()
+		return 0, nil, os.ErrDeadlineExceeded
 	}
 	// If b is too small, additional bytes are discarded.
 	// This mirrors the behavior of large UDP datagrams received on a UDP socket (on Linux).
@@ -74,6 +89,7 @@ func (c *proxiedConn) Close() error {
 	c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
 	err := c.str.Close()
 	<-c.readDone
+	c.readCtxCancel()
 	return err
 }
 
@@ -87,8 +103,43 @@ func (c *proxiedConn) SetDeadline(t time.Time) error {
 }
 
 func (c *proxiedConn) SetReadDeadline(t time.Time) error {
-	// TODO implement me
-	panic("implement me")
+	c.deadlineMx.Lock()
+	defer c.deadlineMx.Unlock()
+
+	oldDeadline := c.deadline
+	c.deadline = t
+	now := time.Now()
+	// Stop the timer.
+	if t.IsZero() {
+		if c.readDeadlineTimer != nil && !c.readDeadlineTimer.Stop() {
+			<-c.readDeadlineTimer.C
+		}
+
+		return nil
+	}
+	// If the deadline already expired, cancel immediately.
+	if !t.After(now) {
+		c.readCtxCancel()
+		return nil
+	}
+	deadline := t.Sub(now)
+	// if we already have a timer, reset it
+	if c.readDeadlineTimer != nil {
+		// if that timer expired, create a new one
+		if now.Before(oldDeadline) {
+			c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
+		}
+		c.readDeadlineTimer.Reset(deadline)
+	} else { // this is the first time the timer is set
+		c.readDeadlineTimer = time.AfterFunc(deadline, func() {
+			c.deadlineMx.Lock()
+			defer c.deadlineMx.Unlock()
+			if !c.deadline.IsZero() && c.deadline.Before(time.Now()) {
+				c.readCtxCancel()
+			}
+		})
+	}
+	return nil
 }
 
 func (c *proxiedConn) SetWriteDeadline(t time.Time) error {

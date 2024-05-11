@@ -1,4 +1,4 @@
-package masque_test
+package masque
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/masque-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/require"
 	"github.com/yosida95/uritemplate/v3"
@@ -26,8 +25,6 @@ func scaleDuration(d time.Duration) time.Duration {
 	}
 	return d
 }
-
-const requestProtocol = "connect-udp"
 
 func newRequest(target string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -48,7 +45,7 @@ func (s *http3ResponseWriter) HTTPStream() http3.Stream { return s.str }
 
 func TestUpgradeFailures(t *testing.T) {
 	mux := http.NewServeMux()
-	s := masque.Proxy{
+	s := Proxy{
 		Server:   http3.Server{Handler: mux},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 	}
@@ -109,9 +106,6 @@ func TestUpgradeFailures(t *testing.T) {
 }
 
 func TestServerCloseProxiedConn(t *testing.T) {
-	mockCtrl := gomock.NewController(t)
-	defer mockCtrl.Finish()
-
 	testDone := make(chan struct{})
 	defer close(testDone)
 
@@ -119,14 +113,14 @@ func TestServerCloseProxiedConn(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	s := masque.Proxy{
+	s := Proxy{
 		Server:   http3.Server{Handler: mux},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 	}
 	req := newRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
-	str := NewMockStream(mockCtrl)
+	str := NewMockStream(gomock.NewController(t))
 	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(context.Context) ([]byte, error) {
 		return []byte("foo"), nil
 	})
