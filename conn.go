@@ -99,6 +99,11 @@ func (c *proxiedConn) Close() error {
 	err := c.str.Close()
 	<-c.readDone
 	c.readCtxCancel()
+	c.deadlineMx.Lock()
+	if c.readDeadlineTimer != nil {
+		c.readDeadlineTimer.Stop()
+	}
+	c.deadlineMx.Unlock()
 	return err
 }
 
