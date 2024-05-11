@@ -35,6 +35,7 @@ type proxiedConn struct {
 	deadlineMx        sync.Mutex
 	readCtx           context.Context
 	readCtxCancel     context.CancelFunc
+	deadline          time.Time
 	readDeadlineTimer *time.Timer
 }
 
@@ -105,15 +106,18 @@ func (c *proxiedConn) SetReadDeadline(t time.Time) error {
 	c.deadlineMx.Lock()
 	defer c.deadlineMx.Unlock()
 
+	oldDeadline := c.deadline
+	c.deadline = t
 	now := time.Now()
 	// Stop the timer.
 	if t.IsZero() {
 		if c.readDeadlineTimer != nil && !c.readDeadlineTimer.Stop() {
 			<-c.readDeadlineTimer.C
 		}
+
 		return nil
 	}
-	// If the deadline already expired, cancel the cancel immediately.
+	// If the deadline already expired, cancel immediately.
 	if !t.After(now) {
 		c.readCtxCancel()
 		return nil
@@ -122,15 +126,17 @@ func (c *proxiedConn) SetReadDeadline(t time.Time) error {
 	// if we already have a timer, reset it
 	if c.readDeadlineTimer != nil {
 		// if that timer expired, create a new one
-		// TODO: this is racy with the Go routine spawned by AfterFunc
-		// better: save the old deadline explicitly
-		if c.readCtx.Err() != nil {
+		if now.Before(oldDeadline) {
 			c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
 		}
 		c.readDeadlineTimer.Reset(deadline)
 	} else { // this is the first time the timer is set
 		c.readDeadlineTimer = time.AfterFunc(deadline, func() {
-			c.readCtxCancel()
+			c.deadlineMx.Lock()
+			defer c.deadlineMx.Unlock()
+			if !c.deadline.IsZero() && c.deadline.Before(time.Now()) {
+				c.readCtxCancel()
+			}
 		})
 	}
 	return nil

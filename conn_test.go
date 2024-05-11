@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"golang.org/x/exp/rand"
 	"io"
 	"log"
 	"os"
@@ -25,116 +26,135 @@ func TestCapsuleSkipping(t *testing.T) {
 	require.ErrorIs(t, skipCapsules(&buf), io.EOF)
 }
 
-func setupStreamAndConn(t *testing.T) (*MockStream, *proxiedConn) {
-	str := NewMockStream(gomock.NewController(t))
-	done := make(chan struct{})
-	t.Cleanup(func() {
-		str.EXPECT().Close().MaxTimes(1)
-		close(done)
-	})
-	str.EXPECT().Read(gomock.Any()).DoAndReturn(func([]byte) (int, error) {
-		<-done
-		return 0, errors.New("test done")
-	}).MaxTimes(1)
-	return str, newProxiedConn(str, nil, nil)
-}
-
-func TestReadDeadlineReadAfterDeadline(t *testing.T) {
-	str, conn := setupStreamAndConn(t)
-
-	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	})
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(-time.Second)))
-	_, _, err := conn.ReadFrom(make([]byte, 100))
-	require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-}
-
-func TestReadDeadlineUnblockRead(t *testing.T) {
-	str, conn := setupStreamAndConn(t)
-
-	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	})
-	errChan := make(chan error, 1)
-	go func() {
-		_, _, err := conn.ReadFrom(make([]byte, 100))
-		errChan <- err
-	}()
-	select {
-	case err := <-errChan:
-		t.Fatalf("didn't expect ReadFrom to return early: %v", err)
-	case <-time.After(scaleDuration(50 * time.Millisecond)):
+func TestReadDeadline(t *testing.T) {
+	setupStreamAndConn := func() (*MockStream, *proxiedConn) {
+		str := NewMockStream(gomock.NewController(t))
+		done := make(chan struct{})
+		t.Cleanup(func() {
+			str.EXPECT().Close().MaxTimes(1)
+			close(done)
+		})
+		str.EXPECT().Read(gomock.Any()).DoAndReturn(func([]byte) (int, error) {
+			<-done
+			return 0, errors.New("test done")
+		}).MaxTimes(1)
+		return str, newProxiedConn(str, nil, nil)
 	}
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(-time.Second)))
-	select {
-	case err := <-errChan:
+
+	t.Run("read after deadline", func(t *testing.T) {
+		str, conn := setupStreamAndConn()
+		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(-time.Second)))
+		_, _, err := conn.ReadFrom(make([]byte, 100))
 		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-	case <-time.After(scaleDuration(100 * time.Millisecond)):
-		t.Fatal("timeout")
-	}
-}
-
-func TestReadDeadlineReset(t *testing.T) {
-	str, conn := setupStreamAndConn(t)
-
-	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
 	})
 
-	start := time.Now()
-	d := scaleDuration(75 * time.Millisecond)
-	require.NoError(t, conn.SetReadDeadline(start.Add(d)))
-	errChan := make(chan error, 1)
-	go func() {
-		_, _, err := conn.ReadFrom(make([]byte, 100))
-		errChan <- err
-	}()
-	require.NoError(t, conn.SetReadDeadline(start.Add(2*d)))
-	select {
-	case err := <-errChan:
-		if since := time.Since(start); since < 2*d {
-			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-			t.Fatalf("ReadFrom returned early: %s, expected >= %s", since, 2*d)
+	t.Run("unblocking read", func(t *testing.T) {
+		str, conn := setupStreamAndConn()
+		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}).Times(2)
+		errChan := make(chan error, 1)
+		go func() {
+			_, _, err := conn.ReadFrom(make([]byte, 100))
+			errChan <- err
+		}()
+		select {
+		case err := <-errChan:
+			t.Fatalf("didn't expect ReadFrom to return early: %v", err)
+		case <-time.After(scaleDuration(50 * time.Millisecond)):
 		}
-	case <-time.After(10 * d):
-		t.Fatal("timeout")
-	}
-}
-
-func TestReadDeadlineCancellation(t *testing.T) {
-	str, conn := setupStreamAndConn(t)
-
-	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(-time.Second)))
+		select {
+		case err := <-errChan:
+			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+		case <-time.After(scaleDuration(100 * time.Millisecond)):
+			t.Fatal("timeout")
+		}
+		_, _, err := conn.ReadFrom(make([]byte, 100))
+		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
 	})
 
-	start := time.Now()
-	d := scaleDuration(75 * time.Millisecond)
-	require.NoError(t, conn.SetReadDeadline(start.Add(d)))
-	errChan := make(chan error, 1)
-	go func() {
-		_, _, err := conn.ReadFrom(make([]byte, 100))
-		errChan <- err
-	}()
-	require.NoError(t, conn.SetReadDeadline(time.Time{}))
-	select {
-	case <-errChan:
-		t.Fatal("deadline was cancelled")
-	case <-time.After(2 * d):
-	}
+	t.Run("extending the deadline", func(t *testing.T) {
+		str, conn := setupStreamAndConn()
+		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
 
-	// test shutdown
-	require.NoError(t, conn.SetReadDeadline(time.Now()))
-	select {
-	case err := <-errChan:
-		require.Error(t, err)
-	case <-time.After(scaleDuration(100 * time.Millisecond)):
-		t.Fatal("timeout")
-	}
+		start := time.Now()
+		d := scaleDuration(75 * time.Millisecond)
+		require.NoError(t, conn.SetReadDeadline(start.Add(d)))
+		errChan := make(chan error, 1)
+		go func() {
+			_, _, err := conn.ReadFrom(make([]byte, 100))
+			errChan <- err
+		}()
+		require.NoError(t, conn.SetReadDeadline(start.Add(2*d)))
+		select {
+		case err := <-errChan:
+			if since := time.Since(start); since < 2*d {
+				require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+				t.Fatalf("ReadFrom returned early: %s, expected >= %s", since, 2*d)
+			}
+		case <-time.After(10 * d):
+			t.Fatal("timeout")
+		}
+	})
 
+	t.Run("cancelling the deadline", func(t *testing.T) {
+		str, conn := setupStreamAndConn()
+		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+
+		start := time.Now()
+		d := scaleDuration(75 * time.Millisecond)
+		require.NoError(t, conn.SetReadDeadline(start.Add(d)))
+		errChan := make(chan error, 1)
+		go func() {
+			_, _, err := conn.ReadFrom(make([]byte, 100))
+			errChan <- err
+		}()
+		require.NoError(t, conn.SetReadDeadline(time.Time{}))
+		select {
+		case <-errChan:
+			t.Fatal("deadline was cancelled")
+		case <-time.After(2 * d):
+		}
+
+		// test shutdown
+		require.NoError(t, conn.SetReadDeadline(time.Now()))
+		select {
+		case err := <-errChan:
+			require.Error(t, err)
+		case <-time.After(scaleDuration(100 * time.Millisecond)):
+			t.Fatal("timeout")
+		}
+	})
+
+	t.Run("multiple deadlines", func(t *testing.T) {
+		str, conn := setupStreamAndConn()
+		const num = 10
+		const maxDeadline = 5 * time.Millisecond
+		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}).Times(num)
+
+		for i := 0; i < num; i++ {
+			// random duration between -5ms and 5ms
+			d := scaleDuration(maxDeadline - time.Duration(rand.Intn(int(2*maxDeadline))))
+			t.Logf("setting deadline to %v", d)
+			require.NoError(t, conn.SetReadDeadline(time.Now().Add(d)))
+			_, _, err := conn.ReadFrom(make([]byte, 100))
+			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
+		}
+	})
 }
