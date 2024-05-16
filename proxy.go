@@ -49,8 +49,11 @@ type proxyEntry struct {
 type Proxy struct {
 	http3.Server
 
+	// Template is the URI template that clients will use to configure this UDP proxy.
 	Template *uritemplate.Template
 
+	// Allow determines if a proxying request from a client is allowed to proceed.
+	// It is called after the requested target address has been resolved.
 	Allow func(context.Context, *net.UDPAddr) bool
 
 	closed atomic.Bool
