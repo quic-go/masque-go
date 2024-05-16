@@ -43,7 +43,7 @@ func init() {
 
 type proxyEntry struct {
 	str  http3.Stream
-	conn *net.UDPConn
+	conn net.PacketConn
 }
 
 type Proxy struct {
@@ -57,9 +57,9 @@ type Proxy struct {
 	Allow func(context.Context, *net.UDPAddr) bool
 
 	// DialTarget is called when the proxy needs to open a new UDP socket to the target server.
-	// It must return a connected UDP socket.
+	// It must return a pre-connected UDP socket.
 	// TODO(#3): support unconnected sockets.
-	DialTarget func(*net.UDPAddr) (*net.UDPConn, error)
+	DialTarget func(*net.UDPAddr) (net.PacketConn, error)
 
 	closed atomic.Bool
 
@@ -130,7 +130,7 @@ func (s *Proxy) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		return errors.New("forbidden")
 	}
 
-	var conn *net.UDPConn
+	var conn net.PacketConn
 	if s.DialTarget == nil {
 		conn, err = net.DialUDP("udp", nil, addr)
 	} else {
@@ -158,8 +158,8 @@ func (s *Proxy) Upgrade(w http.ResponseWriter, r *http.Request) error {
 
 	go func() {
 		defer s.refCount.Done()
-		if err := s.proxyConnSend(conn, str); err != nil {
-			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
+		if err := s.proxyConnSend(conn, addr, str); err != nil {
+			log.Printf("proxying send side to %s failed: %v", addr, err)
 		}
 		str.Close()
 		conn.Close()
@@ -167,7 +167,7 @@ func (s *Proxy) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	go func() {
 		defer s.refCount.Done()
 		if err := s.proxyConnReceive(conn, str); err != nil && !s.closed.Load() {
-			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
+			log.Printf("proxying receive side to %s failed: %v", addr, err)
 		}
 		str.Close()
 		conn.Close()
@@ -184,22 +184,31 @@ func (s *Proxy) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnSend(conn net.PacketConn, remoteAddr net.Addr, str http3.Stream) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
 			return err
 		}
-		if _, err := conn.Write(data); err != nil {
+		// It's invalid to call WriteTo on pre-connected sockets.
+		if c, ok := conn.(io.Writer); ok {
+			if _, err := c.Write(data); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := conn.WriteTo(data, remoteAddr); err != nil {
 			return err
 		}
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnReceive(conn net.PacketConn, str http3.Stream) error {
 	b := make([]byte, 1500)
 	for {
-		n, err := conn.Read(b)
+		// It is assumed that the connection is a pre-connected UDP socket.
+		// We therefore don't have to check that the address matches.
+		n, _, err := conn.ReadFrom(b)
 		if err != nil {
 			return err
 		}
