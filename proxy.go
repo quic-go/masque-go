@@ -56,6 +56,11 @@ type Proxy struct {
 	// It is called after the requested target address has been resolved.
 	Allow func(context.Context, *net.UDPAddr) bool
 
+	// DialTarget is called when the proxy needs to open a new UDP socket to the target server.
+	// It must return a connected UDP socket.
+	// TODO(#3): support unconnected sockets.
+	DialTarget func(*net.UDPAddr) (*net.UDPConn, error)
+
 	closed atomic.Bool
 
 	mx       sync.Mutex
@@ -125,7 +130,12 @@ func (s *Proxy) Upgrade(w http.ResponseWriter, r *http.Request) error {
 		return errors.New("forbidden")
 	}
 
-	conn, err := net.DialUDP("udp", nil, addr)
+	var conn *net.UDPConn
+	if s.DialTarget == nil {
+		conn, err = net.DialUDP("udp", nil, addr)
+	} else {
+		conn, err = s.DialTarget(addr)
+	}
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return err
