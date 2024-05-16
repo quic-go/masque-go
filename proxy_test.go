@@ -105,16 +105,15 @@ func TestUpgradeFailures(t *testing.T) {
 	})
 }
 
-func TestServerCloseProxiedConn(t *testing.T) {
+func TestProxyCloseProxiedConn(t *testing.T) {
 	testDone := make(chan struct{})
 	defer close(testDone)
 
 	remoteServerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
 
-	mux := http.NewServeMux()
 	s := Proxy{
-		Server:   http3.Server{Handler: mux},
+		Server:   http3.Server{Handler: http.NewServeMux()},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 	}
 	req := newRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
@@ -158,4 +157,24 @@ func TestServerCloseProxiedConn(t *testing.T) {
 	remoteServerConn.SetReadDeadline(time.Now().Add(scaleDuration(25 * time.Millisecond)))
 	_, _, err = remoteServerConn.ReadFrom(b)
 	require.Error(t, err)
+}
+
+func TestProxyDialFailure(t *testing.T) {
+	var dialedAddr *net.UDPAddr
+	testErr := errors.New("test error")
+	s := Proxy{
+		Server:   http3.Server{Handler: http.NewServeMux()},
+		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
+		DialTarget: func(addr *net.UDPAddr) (*net.UDPConn, error) {
+			dialedAddr = addr
+			return nil, testErr
+		},
+	}
+	req := newRequest("https://localhost:1234/masque?h=localhost&p=443")
+	rec := httptest.NewRecorder()
+
+	require.ErrorIs(t, s.Upgrade(rec, req), testErr)
+	require.Equal(t, "127.0.0.1", dialedAddr.IP.String())
+	require.Equal(t, 443, dialedAddr.Port)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }
