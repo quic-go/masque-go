@@ -21,9 +21,15 @@ import (
 const defaultInitialPacketSize = 1350
 
 type Client struct {
-	Template        *uritemplate.Template
+	// Template is the URI template of the UDP proxy.
+	Template *uritemplate.Template
+
+	// TLSClientConfig is the TLS client config used when dialing the QUIC connection to the proxy.
+	// It must set the h3 ALPN.
 	TLSClientConfig *tls.Config
-	QUICConfig      *quic.Config
+
+	// QUICConfig is the QUIC config used when dialing the QUIC connection.
+	QUICConfig *quic.Config
 
 	dialOnce sync.Once
 	dialErr  error
