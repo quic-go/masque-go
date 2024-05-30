@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 
 	"github.com/quic-go/masque-go"
@@ -16,7 +17,7 @@ import (
 
 func main() {
 	var templateStr, bind, keyFile, certFile string
-	flag.StringVar(&templateStr, "t", "", "URI template, must use a /masque endpoint")
+	flag.StringVar(&templateStr, "t", "", "URI template")
 	flag.StringVar(&bind, "b", "", "bind to (ip:port)")
 	flag.StringVar(&keyFile, "k", "", "key file")
 	flag.StringVar(&certFile, "c", "", "cert file")
@@ -47,7 +48,12 @@ func main() {
 			Logger:          slog.Default(),
 		},
 	}
-	http.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+	// parse the template to extract the path for the HTTP handler
+	u, err := url.Parse(templateStr)
+	if err != nil {
+		log.Fatalf("failed to parse URI template: %v", err)
+	}
+	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
 		if err := proxy.Upgrade(w, r); err != nil {
 			log.Printf("failed to upgrade request from %s: %v", r.RemoteAddr, err)
 			return
