@@ -165,7 +165,7 @@ func TestProxyDialFailure(t *testing.T) {
 	s := Proxy{
 		Server:   http3.Server{Handler: http.NewServeMux()},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
-		DialTarget: func(addr *net.UDPAddr) (*net.UDPConn, error) {
+		DialTarget: func(_ context.Context, addr *net.UDPAddr) (*net.UDPConn, error) {
 			dialedAddr = addr
 			return nil, testErr
 		},
