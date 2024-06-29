@@ -37,7 +37,7 @@ type Client struct {
 	rt       *http3.SingleDestinationRoundTripper
 }
 
-func (c *Client) DialIP(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, error) {
+func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, error) {
 	if c.Template == nil {
 		return nil, errors.New("masque: no template")
 	}
