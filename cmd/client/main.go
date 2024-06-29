@@ -52,7 +52,7 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				pconn, err := cl.DialIP(context.Background(), raddr)
+				pconn, err := cl.Dial(context.Background(), raddr)
 				if err != nil {
 					log.Fatal("dialing MASQUE failed:", err)
 				}

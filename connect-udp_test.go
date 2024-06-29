@@ -82,7 +82,7 @@ func TestProxying(t *testing.T) {
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
 	defer cl.Close()
-	proxiedConn, err := cl.DialIP(context.Background(), remoteServerConn.LocalAddr().(*net.UDPAddr))
+	proxiedConn, err := cl.Dial(context.Background(), remoteServerConn.LocalAddr().(*net.UDPAddr))
 	require.NoError(t, err)
 
 	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
@@ -132,7 +132,7 @@ func TestProxyShutdown(t *testing.T) {
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
 	defer cl.Close()
-	proxiedConn, err := cl.DialIP(context.Background(), remoteServerConn.LocalAddr().(*net.UDPAddr))
+	proxiedConn, err := cl.Dial(context.Background(), remoteServerConn.LocalAddr().(*net.UDPAddr))
 	require.NoError(t, err)
 
 	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
