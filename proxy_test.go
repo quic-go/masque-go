@@ -160,12 +160,12 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 }
 
 func TestProxyDialFailure(t *testing.T) {
-	var dialedAddr *net.UDPAddr
+	var dialedAddr string
 	testErr := errors.New("test error")
 	s := Proxy{
 		Server:   http3.Server{Handler: http.NewServeMux()},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
-		DialTarget: func(_ context.Context, addr *net.UDPAddr) (*net.UDPConn, error) {
+		DialTarget: func(_ context.Context, addr string) (*net.UDPConn, error) {
 			dialedAddr = addr
 			return nil, testErr
 		},
@@ -174,7 +174,6 @@ func TestProxyDialFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	require.ErrorIs(t, s.Upgrade(rec, req), testErr)
-	require.Equal(t, "127.0.0.1", dialedAddr.IP.String())
-	require.Equal(t, 443, dialedAddr.Port)
+	require.Equal(t, "localhost:443", dialedAddr)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }

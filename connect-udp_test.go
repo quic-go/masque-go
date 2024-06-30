@@ -61,7 +61,6 @@ func TestProxying(t *testing.T) {
 			Handler:         mux,
 		},
 		Template: template,
-		Allow:    func(context.Context, *net.UDPAddr) bool { return true },
 	}
 	defer server.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +111,6 @@ func TestProxyShutdown(t *testing.T) {
 			Handler:         mux,
 		},
 		Template: template,
-		Allow:    func(context.Context, *net.UDPAddr) bool { return true },
 	}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		if err := server.Upgrade(w, r); err != nil {

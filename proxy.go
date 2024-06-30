@@ -52,14 +52,10 @@ type Proxy struct {
 	// Template is the URI template that clients will use to configure this UDP proxy.
 	Template *uritemplate.Template
 
-	// Allow determines if a proxying request from a client is allowed to proceed.
-	// It is called after the requested target address has been resolved.
-	Allow func(context.Context, *net.UDPAddr) bool
-
 	// DialTarget is called when the proxy needs to open a new UDP socket to the target server.
 	// It must return a connected UDP socket.
 	// TODO(#3): support unconnected sockets.
-	DialTarget func(context.Context, *net.UDPAddr) (*net.UDPConn, error)
+	DialTarget func(context.Context, string) (*net.UDPConn, error)
 
 	closed atomic.Bool
 
@@ -120,25 +116,26 @@ func (s *Proxy) Upgrade(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set(capsuleHeader, capsuleProtocolHeaderValue)
 
 	dst := fmt.Sprintf("%s:%d", targetHost, targetPort)
-	addr, err := net.ResolveUDPAddr("udp", dst)
-	if err != nil {
-		// TODO: set proxy-status header (might want to use structured headers)
-		w.WriteHeader(http.StatusGatewayTimeout)
-	}
-	if s.Allow != nil && !s.Allow(r.Context(), addr) {
-		w.WriteHeader(http.StatusForbidden)
-		return errors.New("forbidden")
-	}
 
 	var conn *net.UDPConn
 	if s.DialTarget == nil {
+		addr, err := net.ResolveUDPAddr("udp", dst)
+		if err != nil {
+			// TODO: set proxy-status header (might want to use structured headers)
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return fmt.Errorf("failed to resolve target address: %w", err)
+		}
 		conn, err = net.DialUDP("udp", nil, addr)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return err
+		}
 	} else {
-		conn, err = s.DialTarget(r.Context(), addr)
-	}
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return err
+		conn, err = s.DialTarget(r.Context(), dst)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return err
+		}
 	}
 	str := w.(http3.HTTPStreamer).HTTPStream()
 
