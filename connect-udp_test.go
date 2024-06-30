@@ -62,15 +62,16 @@ func TestProxying(t *testing.T) {
 	defer server.Close()
 	proxy := masque.Proxy{
 		Template: template,
-		Allow:    func(context.Context, *net.UDPAddr) bool { return true },
 	}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		if err := proxy.Upgrade(w, r); err != nil {
+		req, err := proxy.ParseRequest(r)
+		if err != nil {
 			t.Log("Upgrade failed:", err)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		proxy.Proxy(w, req)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -114,14 +115,15 @@ func TestProxyShutdown(t *testing.T) {
 	defer server.Close()
 	proxy := masque.Proxy{
 		Template: template,
-		Allow:    func(context.Context, *net.UDPAddr) bool { return true },
 	}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		if err := proxy.Upgrade(w, r); err != nil {
+		req, err := proxy.ParseRequest(r)
+		if err != nil {
 			t.Log("Upgrade failed:", err)
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		proxy.Proxy(w, req)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {

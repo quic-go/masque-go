@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"log"
 	"log/slog"
@@ -53,11 +54,17 @@ func main() {
 		log.Fatalf("failed to parse URI template: %v", err)
 	}
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
-		if err := proxy.Upgrade(w, r); err != nil {
-			log.Printf("failed to upgrade request from %s: %v", r.RemoteAddr, err)
+		req, err := proxy.ParseRequest(r)
+		if err != nil {
+			var perr *masque.RequestParseError
+			if errors.As(err, &perr) {
+				w.WriteHeader(perr.HTTPStatus)
+				return
+			}
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		proxy.Proxy(w, req)
 	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("failed to run proxy: %v", err)
