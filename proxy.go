@@ -47,8 +47,6 @@ type proxyEntry struct {
 }
 
 type Proxy struct {
-	http3.Server
-
 	// Template is the URI template that clients will use to configure this UDP proxy.
 	Template *uritemplate.Template
 
@@ -211,7 +209,6 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
 
 func (s *Proxy) Close() error {
 	s.closed.Store(true)
-	err := s.Server.Close()
 	s.mx.Lock()
 	for entry := range s.conns {
 		entry.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
@@ -221,5 +218,5 @@ func (s *Proxy) Close() error {
 	s.conns = nil
 	s.mx.Unlock()
 	s.refCount.Wait()
-	return err
+	return nil
 }

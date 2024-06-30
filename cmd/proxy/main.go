@@ -39,15 +39,14 @@ func main() {
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{
 		Certificates: []tls.Certificate{cert},
 	})
-	proxy := masque.Proxy{
-		Template: template,
-		Server: http3.Server{
-			Addr:            bind,
-			TLSConfig:       tlsConf,
-			EnableDatagrams: true,
-			Logger:          slog.Default(),
-		},
+	server := http3.Server{
+		Addr:            bind,
+		TLSConfig:       tlsConf,
+		EnableDatagrams: true,
+		Logger:          slog.Default(),
 	}
+	defer server.Close()
+	proxy := masque.Proxy{Template: template}
 	// parse the template to extract the path for the HTTP handler
 	u, err := url.Parse(templateStr)
 	if err != nil {
@@ -60,7 +59,7 @@ func main() {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	if err := proxy.ListenAndServe(); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("failed to run proxy: %v", err)
 	}
 }

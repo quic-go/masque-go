@@ -53,19 +53,20 @@ func TestProxying(t *testing.T) {
 	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", conn.LocalAddr().(*net.UDPAddr).Port))
 
 	mux := http.NewServeMux()
-	server := masque.Proxy{
-		Server: http3.Server{
-			TLSConfig:       tlsConf,
-			QUICConfig:      &quic.Config{EnableDatagrams: true},
-			EnableDatagrams: true,
-			Handler:         mux,
-		},
+	server := http3.Server{
+		TLSConfig:       tlsConf,
+		QUICConfig:      &quic.Config{EnableDatagrams: true},
+		EnableDatagrams: true,
+		Handler:         mux,
+	}
+	defer server.Close()
+	proxy := masque.Proxy{
 		Template: template,
 		Allow:    func(context.Context, *net.UDPAddr) bool { return true },
 	}
-	defer server.Close()
+	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		if err := server.Upgrade(w, r); err != nil {
+		if err := proxy.Upgrade(w, r); err != nil {
 			t.Log("Upgrade failed:", err)
 			return
 		}
@@ -104,18 +105,19 @@ func TestProxyShutdown(t *testing.T) {
 	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", conn.LocalAddr().(*net.UDPAddr).Port))
 
 	mux := http.NewServeMux()
-	server := masque.Proxy{
-		Server: http3.Server{
-			TLSConfig:       tlsConf,
-			QUICConfig:      &quic.Config{EnableDatagrams: true},
-			EnableDatagrams: true,
-			Handler:         mux,
-		},
+	server := http3.Server{
+		TLSConfig:       tlsConf,
+		QUICConfig:      &quic.Config{EnableDatagrams: true},
+		EnableDatagrams: true,
+		Handler:         mux,
+	}
+	defer server.Close()
+	proxy := masque.Proxy{
 		Template: template,
 		Allow:    func(context.Context, *net.UDPAddr) bool { return true },
 	}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		if err := server.Upgrade(w, r); err != nil {
+		if err := proxy.Upgrade(w, r); err != nil {
 			t.Log("Upgrade failed:", err)
 			return
 		}
@@ -143,7 +145,7 @@ func TestProxyShutdown(t *testing.T) {
 	require.Equal(t, []byte("foobar"), b[:n])
 
 	// Close the server and expect the proxied connection to unblock ReadFrom and WriteTo.
-	server.Close()
+	proxy.Close()
 	_, _, err = proxiedConn.ReadFrom(b)
 	require.Error(t, err)
 	var errored bool

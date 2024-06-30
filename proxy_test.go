@@ -44,9 +44,7 @@ var _ http3.HTTPStreamer = &http3ResponseWriter{}
 func (s *http3ResponseWriter) HTTPStream() http3.Stream { return s.str }
 
 func TestUpgradeFailures(t *testing.T) {
-	mux := http.NewServeMux()
 	s := Proxy{
-		Server:   http3.Server{Handler: mux},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 	}
 
@@ -113,7 +111,6 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	require.NoError(t, err)
 
 	s := Proxy{
-		Server:   http3.Server{Handler: http.NewServeMux()},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 	}
 	req := newRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
@@ -163,7 +160,6 @@ func TestProxyDialFailure(t *testing.T) {
 	var dialedAddr *net.UDPAddr
 	testErr := errors.New("test error")
 	s := Proxy{
-		Server:   http3.Server{Handler: http.NewServeMux()},
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 		DialTarget: func(_ context.Context, addr *net.UDPAddr) (*net.UDPConn, error) {
 			dialedAddr = addr
