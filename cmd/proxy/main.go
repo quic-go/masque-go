@@ -47,14 +47,14 @@ func main() {
 		Logger:          slog.Default(),
 	}
 	defer server.Close()
-	proxy := masque.Proxy{Template: template}
+	proxy := masque.Proxy{}
 	// parse the template to extract the path for the HTTP handler
 	u, err := url.Parse(templateStr)
 	if err != nil {
 		log.Fatalf("failed to parse URI template: %v", err)
 	}
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
-		req, err := proxy.ParseRequest(r)
+		req, err := masque.ParseRequest(r, template)
 		if err != nil {
 			var perr *masque.RequestParseError
 			if errors.As(err, &perr) {
