@@ -51,55 +51,55 @@ func TestUpgradeFailures(t *testing.T) {
 	t.Run("wrong request method", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque")
 		req.Method = http.MethodHead
-		rec := httptest.NewRecorder()
-		require.EqualError(t, s.Upgrade(rec, req), "expected CONNECT request, got HEAD")
-		require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+		_, err := s.ParseRequest(req)
+		require.EqualError(t, err, "expected CONNECT request, got HEAD")
+		require.Equal(t, http.StatusMethodNotAllowed, err.(*RequestParseError).HTTPStatus)
 	})
 
 	t.Run("wrong protocol", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque")
 		req.Proto = "not-connect-udp"
-		rec := httptest.NewRecorder()
-		require.EqualError(t, s.Upgrade(rec, req), "unexpected protocol: not-connect-udp")
-		require.Equal(t, http.StatusNotImplemented, rec.Code)
+		_, err := s.ParseRequest(req)
+		require.EqualError(t, err, "unexpected protocol: not-connect-udp")
+		require.Equal(t, http.StatusNotImplemented, err.(*RequestParseError).HTTPStatus)
 	})
 
 	t.Run("missing Capsule-Protocol header", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque")
 		req.Header.Del("Capsule-Protocol")
-		rec := httptest.NewRecorder()
-		require.EqualError(t, s.Upgrade(rec, req), "missing Capsule-Protocol header")
-		require.Equal(t, http.StatusBadRequest, rec.Code)
+		_, err := s.ParseRequest(req)
+		require.EqualError(t, err, "missing Capsule-Protocol header")
+		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 
 	t.Run("invalid Capsule-Protocol header", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque")
 		req.Header.Set("Capsule-Protocol", "🤡")
-		rec := httptest.NewRecorder()
-		require.EqualError(t, s.Upgrade(rec, req), "invalid capsule header value: [🤡]")
-		require.Equal(t, http.StatusBadRequest, rec.Code)
+		_, err := s.ParseRequest(req)
+		require.EqualError(t, err, "invalid capsule header value: [🤡]")
+		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 
 	t.Run("invalid Capsule-Protocol header value", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque")
 		req.Header.Set("Capsule-Protocol", "2")
-		rec := httptest.NewRecorder()
-		require.EqualError(t, s.Upgrade(rec, req), "incorrect capsule header value: 2")
-		require.Equal(t, http.StatusBadRequest, rec.Code)
+		_, err := s.ParseRequest(req)
+		require.EqualError(t, err, "incorrect capsule header value: 2")
+		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 
 	t.Run("missing target host", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque?h=&p=1234")
-		rec := httptest.NewRecorder()
-		require.EqualError(t, s.Upgrade(rec, req), "expected target_host and target_port")
-		require.Equal(t, http.StatusBadRequest, rec.Code)
+		_, err := s.ParseRequest(req)
+		require.EqualError(t, err, "expected target_host and target_port")
+		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 
 	t.Run("invalid target port", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque?h=localhost&p=foobar")
-		rec := httptest.NewRecorder()
-		require.EqualError(t, s.Upgrade(rec, req), "failed to decode target_port")
-		require.Equal(t, http.StatusBadRequest, rec.Code)
+		_, err := s.ParseRequest(req)
+		require.ErrorContains(t, err, "failed to decode target_port")
+		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 }
 
@@ -135,7 +135,9 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 		<-closeStream
 		return 0, io.EOF
 	})
-	require.NoError(t, s.Upgrade(&http3ResponseWriter{ResponseWriter: rec, str: str}, req))
+	r, err := s.ParseRequest(req)
+	require.NoError(t, err)
+	go s.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	b := make([]byte, 100)
@@ -157,20 +159,14 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 }
 
 func TestProxyDialFailure(t *testing.T) {
-	var dialedAddr *net.UDPAddr
-	testErr := errors.New("test error")
 	s := Proxy{
 		Template: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
-		DialTarget: func(_ context.Context, addr *net.UDPAddr) (*net.UDPConn, error) {
-			dialedAddr = addr
-			return nil, testErr
-		},
 	}
-	req := newRequest("https://localhost:1234/masque?h=localhost&p=443")
+	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
+	req, err := s.ParseRequest(r)
+	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorIs(t, s.Upgrade(rec, req), testErr)
-	require.Equal(t, "127.0.0.1", dialedAddr.IP.String())
-	require.Equal(t, 443, dialedAddr.Port)
-	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.ErrorContains(t, s.Proxy(rec, req), "invalid port")
+	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
 }
