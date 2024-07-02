@@ -60,12 +60,10 @@ func TestProxying(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{
-		Template: template,
-	}
+	proxy := masque.Proxy{}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := proxy.ParseRequest(r)
+		req, err := masque.ParseRequest(r, template)
 		if err != nil {
 			t.Log("Upgrade failed:", err)
 			w.WriteHeader(http.StatusBadRequest)
@@ -113,11 +111,9 @@ func TestProxyShutdown(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{
-		Template: template,
-	}
+	proxy := masque.Proxy{}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := proxy.ParseRequest(r)
+		req, err := masque.ParseRequest(r, template)
 		if err != nil {
 			t.Log("Upgrade failed:", err)
 			w.WriteHeader(http.StatusBadRequest)
