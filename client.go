@@ -40,43 +40,43 @@ type Client struct {
 // DialAddr dials a proxied connection to a target server.
 // The target address is sent to the proxy, and the DNS resolution is left to the proxy.
 // The target must be given as a host:port.
-func (c *Client) DialAddr(ctx context.Context, target string) (net.PacketConn, error) {
+func (c *Client) DialAddr(ctx context.Context, target string) (net.PacketConn, *http.Response, error) {
 	if c.Template == nil {
-		return nil, errors.New("masque: no template")
+		return nil, nil, errors.New("masque: no template")
 	}
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse target: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse target: %w", err)
 	}
 	str, err := c.Template.Expand(uritemplate.Values{
 		uriTemplateTargetHost: uritemplate.String(host),
 		uriTemplateTargetPort: uritemplate.String(port),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("masque: failed to expand Template: %w", err)
+		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
 	return c.dial(ctx, str)
 }
 
 // Dial dials a proxied connection to a target server.
-func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, error) {
+func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, *http.Response, error) {
 	if c.Template == nil {
-		return nil, errors.New("masque: no template")
+		return nil, nil, errors.New("masque: no template")
 	}
 	str, err := c.Template.Expand(uritemplate.Values{
 		uriTemplateTargetHost: uritemplate.String(url.QueryEscape(raddr.IP.String())),
 		uriTemplateTargetPort: uritemplate.String(strconv.Itoa(raddr.Port)),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("masque: failed to expand Template: %w", err)
+		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
 	return c.dial(ctx, str)
 }
 
-func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketConn, error) {
+func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketConn, *http.Response, error) {
 	u, err := url.Parse(expandedTemplate)
 	if err != nil {
-		return nil, fmt.Errorf("masque: failed to parse URI: %w", err)
+		return nil, nil, fmt.Errorf("masque: failed to parse URI: %w", err)
 	}
 
 	c.dialOnce.Do(func() {
@@ -107,27 +107,27 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 		}
 	})
 	if c.dialErr != nil {
-		return nil, c.dialErr
+		return nil, nil, c.dialErr
 	}
 	conn := c.rt.Start()
 	select {
 	case <-ctx.Done():
-		return nil, context.Cause(ctx)
+		return nil, nil, context.Cause(ctx)
 	case <-conn.Context().Done():
-		return nil, context.Cause(conn.Context())
+		return nil, nil, context.Cause(conn.Context())
 	case <-conn.ReceivedSettings():
 	}
 	settings := conn.Settings()
 	if !settings.EnableExtendedConnect {
-		return nil, errors.New("masque: server didn't enable Extended CONNECT")
+		return nil, nil, errors.New("masque: server didn't enable Extended CONNECT")
 	}
 	if !settings.EnableDatagrams {
-		return nil, errors.New("masque: server didn't enable Datagrams")
+		return nil, nil, errors.New("masque: server didn't enable Datagrams")
 	}
 
 	rstr, err := c.rt.OpenRequestStream(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("masque: failed to open request stream: %w", err)
+		return nil, nil, fmt.Errorf("masque: failed to open request stream: %w", err)
 	}
 	if err := rstr.SendRequestHeader(&http.Request{
 		Method: http.MethodConnect,
@@ -136,17 +136,17 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 		Header: http.Header{capsuleHeader: []string{capsuleProtocolHeaderValue}},
 		URL:    u,
 	}); err != nil {
-		return nil, fmt.Errorf("masque: failed to send request: %w", err)
+		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
 	}
 	// TODO: optimistically return the connection
 	rsp, err := rstr.ReadResponse()
 	if err != nil {
-		return nil, fmt.Errorf("masque: failed to read response: %w", err)
+		return nil, nil, fmt.Errorf("masque: failed to read response: %w", err)
 	}
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
-		return nil, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
+		return nil, rsp, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
-	return newProxiedConn(rstr, conn.LocalAddr()), nil
+	return newProxiedConn(rstr, conn.LocalAddr()), rsp, nil
 }
 
 func (c *Client) Close() error {
