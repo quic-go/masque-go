@@ -38,7 +38,7 @@ func TestReadDeadline(t *testing.T) {
 			<-done
 			return 0, errors.New("test done")
 		}).MaxTimes(1)
-		return str, newProxiedConn(str, nil, nil)
+		return str, newProxiedConn(str, nil)
 	}
 
 	t.Run("read after deadline", func(t *testing.T) {
