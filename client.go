@@ -37,6 +37,28 @@ type Client struct {
 	rt       *http3.SingleDestinationRoundTripper
 }
 
+// DialAddr dials a proxied connection to a target server.
+// The target address is sent to the proxy, and the DNS resolution is left to the proxy.
+// The target must be given as a host:port.
+func (c *Client) DialAddr(ctx context.Context, target string) (net.PacketConn, error) {
+	if c.Template == nil {
+		return nil, errors.New("masque: no template")
+	}
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse target: %w", err)
+	}
+	str, err := c.Template.Expand(uritemplate.Values{
+		uriTemplateTargetHost: uritemplate.String(host),
+		uriTemplateTargetPort: uritemplate.String(port),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("masque: failed to expand Template: %w", err)
+	}
+	return c.dial(ctx, str)
+}
+
+// Dial dials a proxied connection to a target server.
 func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, error) {
 	if c.Template == nil {
 		return nil, errors.New("masque: no template")
@@ -48,7 +70,11 @@ func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, 
 	if err != nil {
 		return nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
-	u, err := url.Parse(str)
+	return c.dial(ctx, str)
+}
+
+func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketConn, error) {
+	u, err := url.Parse(expandedTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("masque: failed to parse URI: %w", err)
 	}
@@ -120,7 +146,7 @@ func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, 
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
-	return newProxiedConn(rstr, conn.LocalAddr(), raddr), nil
+	return newProxiedConn(rstr, conn.LocalAddr()), nil
 }
 
 func (c *Client) Close() error {

@@ -3,7 +3,6 @@ package masque
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -41,12 +40,11 @@ type proxiedConn struct {
 
 var _ net.PacketConn = &proxiedConn{}
 
-func newProxiedConn(str http3.Stream, local, remote net.Addr) *proxiedConn {
+func newProxiedConn(str http3.Stream, local net.Addr) *proxiedConn {
 	c := &proxiedConn{
-		str:        str,
-		localAddr:  local,
-		remoteAddr: remote,
-		readDone:   make(chan struct{}),
+		str:       str,
+		localAddr: local,
+		readDone:  make(chan struct{}),
 	}
 	c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
 	go func() {
@@ -85,11 +83,9 @@ start:
 	return n, c.remoteAddr, nil
 }
 
-func (c *proxiedConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	// A CONNECT-UDP connection mirrors a connected UDP socket.
-	if addr != c.remoteAddr {
-		return 0, fmt.Errorf("unexpected remote address: %s, expected %s", addr, c.remoteAddr)
-	}
+// WriteTo sends a UDP datagram to the target.
+// The net.Addr parameter is ignored.
+func (c *proxiedConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
 	return len(p), c.str.SendDatagram(p)
 }
 
