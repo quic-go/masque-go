@@ -65,3 +65,32 @@ func TestRequestParsing(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 }
+
+func TestPathFromTemplate(t *testing.T) {
+	for _, tc := range []struct {
+		name, template, expected string
+	}{
+		{
+			"variables as URL parameters",
+			"https://localhost:1234/masque?h={target_host}&p={target_port}",
+			"/masque",
+		},
+		{
+			"variables in URL paths",
+			"https://localhost:1234/masque/{target_host}/{target_port}",
+			"/masque/", // needs to have a trailing /
+		},
+		{
+			"variables in URL paths, no trailing /",
+			"https://localhost:1234/masque/{target_host}/{target_port}/",
+			"/masque/",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			temp := uritemplate.MustNew(tc.template)
+			path, err := PathFromTemplate(temp)
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, path)
+		})
+	}
+}

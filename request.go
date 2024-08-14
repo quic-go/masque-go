@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/dunglas/httpsfv"
 	"github.com/yosida95/uritemplate/v3"
@@ -88,4 +89,18 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 		}
 	}
 	return &Request{Target: fmt.Sprintf("%s:%d", targetHost, targetPort)}, nil
+}
+
+// PathFromTemplate extracts the HTTP path from a URI template,
+// such that it can be used in a http.ServeMux.
+func PathFromTemplate(t *uritemplate.Template) (string, error) {
+	u, err := url.Parse(t.Raw())
+	if err != nil {
+		return "", err
+	}
+	path := strings.ReplaceAll(strings.ReplaceAll(u.Path, "/{target_host}", ""), "/{target_port}", "")
+	if path != u.Path && len(path) > 0 && path[len(path)-1] != '/' {
+		path = path + "/"
+	}
+	return path, nil
 }
