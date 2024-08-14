@@ -40,7 +40,7 @@ jobs:
         run: go vet ./...
       - name: Install staticcheck
         if: success() || failure() # run this step even if the previous one failed
-        run: go install honnef.co/go/tools/cmd/staticcheck@v0.4.7
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.5.0
       - name: staticcheck
         if: success() || failure() # run this step even if the previous one failed
         run: |
