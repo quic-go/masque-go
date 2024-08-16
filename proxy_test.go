@@ -56,7 +56,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	done := make(chan struct{})
 	str := NewMockStream(gomock.NewController(t))
 	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(context.Context) ([]byte, error) {
-		return []byte("foo"), nil
+		return append(contextIDZero, []byte("foo")...), nil
 	})
 	// This datagram is received after the connection is closed.
 	// We expect that it won't get sent on.
