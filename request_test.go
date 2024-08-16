@@ -4,12 +4,20 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/dunglas/httpsfv"
 	"github.com/stretchr/testify/require"
 	"github.com/yosida95/uritemplate/v3"
 )
 
 func TestRequestParsing(t *testing.T) {
 	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
+
+	t.Run("invalid target port", func(t *testing.T) {
+		req := newRequest("https://localhost:1234/masque?h=localhost&p=1337")
+		r, err := ParseRequest(req, template)
+		require.NoError(t, err)
+		require.Equal(t, r.Target, "localhost:1337")
+	})
 
 	t.Run("wrong request method", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque")
@@ -43,11 +51,21 @@ func TestRequestParsing(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 
+	t.Run("invalid Capsule-Protocol header value type", func(t *testing.T) {
+		req := newRequest("https://localhost:1234/masque")
+		req.Header.Set("Capsule-Protocol", "1")
+		_, err := ParseRequest(req, template)
+		require.EqualError(t, err, "incorrect capsule header value type: int64")
+		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
+	})
+
 	t.Run("invalid Capsule-Protocol header value", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque")
-		req.Header.Set("Capsule-Protocol", "2")
-		_, err := ParseRequest(req, template)
-		require.EqualError(t, err, "incorrect capsule header value: 2")
+		v, err := httpsfv.Marshal(httpsfv.NewItem(false))
+		require.NoError(t, err)
+		req.Header.Set("Capsule-Protocol", v)
+		_, err = ParseRequest(req, template)
+		require.EqualError(t, err, "incorrect capsule header value: false")
 		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 
