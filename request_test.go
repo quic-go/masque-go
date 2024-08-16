@@ -67,30 +67,37 @@ func TestRequestParsing(t *testing.T) {
 }
 
 func TestPathFromTemplate(t *testing.T) {
-	for _, tc := range []struct {
-		name, template, expected string
-	}{
+	for _, tc := range []struct{ name, template, expected, errContains string }{
 		{
-			"variables as URL parameters",
-			"https://localhost:1234/masque?h={target_host}&p={target_port}",
-			"/masque",
+			name:        "invalid URL",
+			template:    "://localhost:1234",
+			errContains: "missing protocol scheme",
 		},
 		{
-			"variables in URL paths",
-			"https://localhost:1234/masque/{target_host}/{target_port}",
-			"/masque/", // needs to have a trailing /
+			name:     "variables as URL parameters",
+			template: "https://localhost:1234/masque?h={target_host}&p={target_port}",
+			expected: "/masque",
 		},
 		{
-			"variables in URL paths, no trailing /",
-			"https://localhost:1234/masque/{target_host}/{target_port}/",
-			"/masque/",
+			name:     "variables in URL paths",
+			template: "https://localhost:1234/masque/{target_host}/{target_port}",
+			expected: "/masque/", // needs to have a trailing /
+		},
+		{
+			name:     "variables in URL paths, no trailing /",
+			template: "https://localhost:1234/masque/{target_host}/{target_port}/",
+			expected: "/masque/",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			temp := uritemplate.MustNew(tc.template)
 			path, err := PathFromTemplate(temp)
-			require.NoError(t, err)
-			require.Equal(t, tc.expected, path)
+			if tc.errContains != "" {
+				require.ErrorContains(t, err, tc.errContains)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.expected, path)
+			}
 		})
 	}
 }
