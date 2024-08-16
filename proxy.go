@@ -2,7 +2,6 @@ package masque
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -13,29 +12,12 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
-
-	"github.com/dunglas/httpsfv"
-)
-
-const (
-	requestProtocol = "connect-udp"
-	capsuleHeader   = "Capsule-Protocol"
 )
 
 const (
 	uriTemplateTargetHost = "target_host"
 	uriTemplateTargetPort = "target_port"
 )
-
-var capsuleProtocolHeaderValue string
-
-func init() {
-	v, err := httpsfv.Marshal(httpsfv.NewItem(1))
-	if err != nil {
-		panic(fmt.Sprintf("failed to marshal capsule protocol header value: %v", err))
-	}
-	capsuleProtocolHeaderValue = v
-}
 
 type proxyEntry struct {
 	str  http3.Stream

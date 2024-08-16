@@ -30,7 +30,7 @@ func newRequest(target string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	req.Method = http.MethodConnect
 	req.Proto = requestProtocol
-	req.Header.Add("Capsule-Protocol", "1")
+	req.Header.Add("Capsule-Protocol", capsuleProtocolHeaderValue)
 	return req
 }
 

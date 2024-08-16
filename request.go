@@ -4,11 +4,27 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 
 	"github.com/dunglas/httpsfv"
 	"github.com/yosida95/uritemplate/v3"
 )
+
+const (
+	requestProtocol = "connect-udp"
+	capsuleHeader   = "Capsule-Protocol"
+)
+
+var capsuleProtocolHeaderValue string
+
+func init() {
+	v, err := httpsfv.Marshal(httpsfv.NewItem(true))
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal capsule protocol header value: %v", err))
+	}
+	capsuleProtocolHeaderValue = v
+}
 
 // Request is the parsed CONNECT-UDP request returned from ParseRequest.
 // Target is the target server that the client requests to connect to.
@@ -57,10 +73,15 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 			Err:        fmt.Errorf("invalid capsule header value: %s", capsuleHeaderValues),
 		}
 	}
-	if v, ok := item.Value.(int64); !ok || v != 1 {
+	if v, ok := item.Value.(bool); !ok {
 		return nil, &RequestParseError{
 			HTTPStatus: http.StatusBadRequest,
-			Err:        fmt.Errorf("incorrect capsule header value: %d", v),
+			Err:        fmt.Errorf("incorrect capsule header value type: %s", reflect.TypeOf(item.Value)),
+		}
+	} else if !v {
+		return nil, &RequestParseError{
+			HTTPStatus: http.StatusBadRequest,
+			Err:        fmt.Errorf("incorrect capsule header value: %t", item.Value),
 		}
 	}
 
