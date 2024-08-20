@@ -40,6 +40,7 @@ type Proxy struct {
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
 func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 	if s.closed.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return net.ErrClosed
 	}
 
@@ -65,6 +66,8 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
 func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
 	if s.closed.Load() {
+		conn.Close()
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return net.ErrClosed
 	}
 
@@ -75,14 +78,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	w.WriteHeader(http.StatusOK)
 
 	str := w.(http3.HTTPStreamer).HTTPStream()
-
 	s.mx.Lock()
-	if s.closed.Load() {
-		str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
-		str.Close()
-		conn.Close()
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}
 	if s.conns == nil {
 		s.conns = make(map[proxyEntry]struct{})
 	}

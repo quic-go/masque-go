@@ -50,7 +50,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	remoteServerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
 
-	s := Proxy{}
+	p := Proxy{}
 	req := newRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -75,7 +75,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	})
 	r, err := ParseRequest(req, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
-	go s.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r)
+	go p.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	b := make([]byte, 100)
@@ -97,12 +97,35 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 }
 
 func TestProxyDialFailure(t *testing.T) {
-	s := Proxy{}
+	p := Proxy{}
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
 	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, s.Proxy(rec, req), "invalid port")
+	require.ErrorContains(t, p.Proxy(rec, req), "invalid port")
 	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
+}
+
+func TestProxyingAfterClose(t *testing.T) {
+	p := &Proxy{}
+	require.NoError(t, p.Close())
+
+	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
+	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	require.NoError(t, err)
+
+	t.Run("proxying", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		require.ErrorIs(t, p.Proxy(rec, req), net.ErrClosed)
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	})
+
+	t.Run("proxying connected socket", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+		require.NoError(t, err)
+		require.ErrorIs(t, p.ProxyConnectedSocket(rec, req, conn), net.ErrClosed)
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	})
 }
