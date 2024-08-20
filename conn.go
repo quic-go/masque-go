@@ -3,6 +3,7 @@ package masque
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -77,16 +78,26 @@ start:
 		}
 		return 0, nil, os.ErrDeadlineExceeded
 	}
+	contextID, n, err := quicvarint.Parse(data)
+	if err != nil {
+		return 0, nil, fmt.Errorf("masque: malformed datagram: %w", err)
+	}
+	if contextID != 0 {
+		// Drop this datagram. We currently only support proxying of UDP payloads.
+		goto start
+	}
 	// If b is too small, additional bytes are discarded.
 	// This mirrors the behavior of large UDP datagrams received on a UDP socket (on Linux).
-	n = copy(b, data)
-	return n, c.remoteAddr, nil
+	return copy(b, data[n:]), c.remoteAddr, nil
 }
 
 // WriteTo sends a UDP datagram to the target.
 // The net.Addr parameter is ignored.
 func (c *proxiedConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
-	return len(p), c.str.SendDatagram(p)
+	data := make([]byte, 0, len(contextIDZero)+len(p))
+	data = append(data, contextIDZero...)
+	data = append(data, p...)
+	return len(p), c.str.SendDatagram(data)
 }
 
 func (c *proxiedConn) Close() error {

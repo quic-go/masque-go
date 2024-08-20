@@ -19,6 +19,8 @@ const (
 	uriTemplateTargetPort = "target_port"
 )
 
+var contextIDZero = quicvarint.Append([]byte{}, 0)
+
 type proxyEntry struct {
 	str  http3.Stream
 	conn *net.UDPConn
@@ -126,7 +128,15 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
 		if err != nil {
 			return err
 		}
-		if _, err := conn.Write(data); err != nil {
+		contextID, n, err := quicvarint.Parse(data)
+		if err != nil {
+			return err
+		}
+		if contextID != 0 {
+			// Drop this datagram. We currently only support proxying of UDP payloads.
+			continue
+		}
+		if _, err := conn.Write(data[n:]); err != nil {
 			return err
 		}
 	}
@@ -139,7 +149,10 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
 		if err != nil {
 			return err
 		}
-		if err := str.SendDatagram(b[:n]); err != nil {
+		data := make([]byte, 0, len(contextIDZero)+n)
+		data = append(data, contextIDZero...)
+		data = append(data, b[:n]...)
+		if err := str.SendDatagram(data); err != nil {
 			return err
 		}
 	}
