@@ -90,11 +90,9 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	s.mx.Unlock()
 
 	var wg sync.WaitGroup
-	s.refCount.Add(3)
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		defer s.refCount.Done()
 		if err := s.proxyConnSend(conn, str); err != nil {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
@@ -102,7 +100,6 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	}()
 	go func() {
 		defer wg.Done()
-		defer s.refCount.Done()
 		if err := s.proxyConnReceive(conn, str); err != nil && !s.closed.Load() {
 			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
@@ -110,7 +107,6 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	}()
 	go func() {
 		defer wg.Done()
-		defer s.refCount.Done()
 		// discard all capsules sent on the request stream
 		if err := skipCapsules(quicvarint.NewReader(str)); err == io.EOF {
 			log.Printf("reading from request stream failed: %v", err)
