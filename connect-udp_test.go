@@ -23,7 +23,8 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-func runEchoServer(t *testing.T) *net.UDPConn {
+// runEchoServer runs an echo server that echos back the data it receives n times.
+func runEchoServer(t *testing.T, amplification int) *net.UDPConn {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
@@ -34,8 +35,10 @@ func runEchoServer(t *testing.T) *net.UDPConn {
 			if err != nil {
 				return
 			}
-			if _, err := conn.WriteTo(b[:n], addr); err != nil {
-				return
+			for i := 0; i < amplification; i++ {
+				if _, err := conn.WriteTo(b[:n], addr); err != nil {
+					return
+				}
 			}
 		}
 	}()
@@ -43,7 +46,8 @@ func runEchoServer(t *testing.T) *net.UDPConn {
 }
 
 func TestProxyToIP(t *testing.T) {
-	remoteServerConn := runEchoServer(t)
+	const amplification = 3
+	remoteServerConn := runEchoServer(t, 3)
 	defer remoteServerConn.Close()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -62,6 +66,7 @@ func TestProxyToIP(t *testing.T) {
 	defer server.Close()
 	proxy := masque.Proxy{}
 	defer proxy.Close()
+	statsChan := make(chan masque.Stats, 1)
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseRequest(r, template)
 		if err != nil {
@@ -69,7 +74,8 @@ func TestProxyToIP(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		stats, _ := proxy.Proxy(w, req)
+		statsChan <- stats
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -81,20 +87,33 @@ func TestProxyToIP(t *testing.T) {
 		Template:        template,
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
-	defer cl.Close()
 	proxiedConn, _, err := cl.Dial(context.Background(), remoteServerConn.LocalAddr().(*net.UDPAddr))
 	require.NoError(t, err)
 
 	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
 	require.NoError(t, err)
-	b := make([]byte, 1500)
-	n, _, err := proxiedConn.ReadFrom(b)
-	require.NoError(t, err)
-	require.Equal(t, []byte("foobar"), b[:n])
+	for i := 0; i < amplification; i++ {
+		b := make([]byte, 1500)
+		n, _, err := proxiedConn.ReadFrom(b)
+		require.NoError(t, err)
+		require.Equal(t, []byte("foobar"), b[:n])
+	}
+	cl.Close()
+	select {
+	case stats := <-statsChan:
+		require.Equal(t, masque.Stats{
+			PacketsSent:     1,
+			DataSent:        6,
+			PacketsReceived: amplification,
+			DataReceived:    6 * amplification,
+		}, stats)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stats")
+	}
 }
 
 func TestProxyToHostname(t *testing.T) {
-	remoteServerConn := runEchoServer(t)
+	remoteServerConn := runEchoServer(t, 1)
 	defer remoteServerConn.Close()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -197,7 +216,7 @@ func TestProxyToHostnameMissingPort(t *testing.T) {
 }
 
 func TestProxyShutdown(t *testing.T) {
-	remoteServerConn := runEchoServer(t)
+	remoteServerConn := runEchoServer(t, 1)
 	defer remoteServerConn.Close()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})

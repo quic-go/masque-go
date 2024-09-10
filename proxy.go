@@ -26,6 +26,11 @@ type proxyEntry struct {
 	conn *net.UDPConn
 }
 
+type Stats struct {
+	PacketsSent, PacketsReceived uint64
+	DataSent, DataReceived       uint64
+}
+
 type Proxy struct {
 	closed atomic.Bool
 
@@ -38,23 +43,23 @@ type Proxy struct {
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
-func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
+func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) (Stats, error) {
 	if s.closed.Load() {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		return net.ErrClosed
+		return Stats{}, net.ErrClosed
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", r.Target)
 	if err != nil {
 		// TODO: set proxy-status header (might want to use structured headers)
 		w.WriteHeader(http.StatusGatewayTimeout)
-		return err
+		return Stats{}, err
 	}
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		// TODO: set proxy-status header (might want to use structured headers)
 		w.WriteHeader(http.StatusGatewayTimeout)
-		return err
+		return Stats{}, err
 	}
 	defer conn.Close()
 
@@ -64,11 +69,11 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) (Stats, error) {
 	if s.closed.Load() {
 		conn.Close()
 		w.WriteHeader(http.StatusServiceUnavailable)
-		return net.ErrClosed
+		return Stats{}, net.ErrClosed
 	}
 
 	s.refCount.Add(1)
@@ -87,16 +92,21 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 
 	var wg sync.WaitGroup
 	wg.Add(3)
+	var packetsSent, packetsReceived, dataSent, dataReceived uint64
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnSend(conn, str); err != nil {
+		var err error
+		packetsSent, dataSent, err = s.proxyConnSend(conn, str)
+		if err != nil && !s.closed.Load() {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil && !s.closed.Load() {
+		var err error
+		packetsReceived, dataReceived, err = s.proxyConnReceive(conn, str)
+		if err != nil && !s.closed.Load() {
 			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
@@ -111,41 +121,50 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 		conn.Close()
 	}()
 	wg.Wait()
-	return nil
+	return Stats{
+		PacketsSent:     packetsSent,
+		PacketsReceived: packetsReceived,
+		DataSent:        dataSent,
+		DataReceived:    dataReceived,
+	}, nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) (packetsSent, dataSent uint64, _ error) {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
-			return err
+			return packetsSent, dataSent, err
 		}
 		contextID, n, err := quicvarint.Parse(data)
 		if err != nil {
-			return err
+			return packetsSent, dataSent, err
 		}
 		if contextID != 0 {
 			// Drop this datagram. We currently only support proxying of UDP payloads.
 			continue
 		}
+		packetsSent++
+		dataSent += uint64(len(data) - n)
 		if _, err := conn.Write(data[n:]); err != nil {
-			return err
+			return packetsSent, dataSent, err
 		}
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) (packetsReceived, dataReceived uint64, _ error) {
 	b := make([]byte, 1500)
 	for {
 		n, err := conn.Read(b)
 		if err != nil {
-			return err
+			return packetsReceived, dataReceived, err
 		}
+		packetsReceived++
+		dataReceived += uint64(n)
 		data := make([]byte, 0, len(contextIDZero)+n)
 		data = append(data, contextIDZero...)
 		data = append(data, b[:n]...)
 		if err := str.SendDatagram(data); err != nil {
-			return err
+			return packetsReceived, dataReceived, err
 		}
 	}
 }
