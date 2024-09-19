@@ -20,12 +20,15 @@ import (
 // This allows tunneling QUIC connections, which themselves have a minimum MTU requirement of 1200 bytes.
 const defaultInitialPacketSize = 1350
 
+// A Client establishes proxied connections to remote hosts,
+// using a UDP proxy.
+// Multiple flows can be proxied via the same connection to the proxy.
 type Client struct {
 	// Template is the URI template of the UDP proxy.
 	Template *uritemplate.Template
 
 	// TLSClientConfig is the TLS client config used when dialing the QUIC connection to the proxy.
-	// It must set the h3 ALPN.
+	// It must set the "h3" ALPN.
 	TLSClientConfig *tls.Config
 
 	// QUICConfig is the QUIC config used when dialing the QUIC connection.
@@ -149,6 +152,8 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 	return newProxiedConn(rstr, conn.LocalAddr()), rsp, nil
 }
 
+// Close closes the connection to the proxy.
+// This immediately shuts down all proxied flows.
 func (c *Client) Close() error {
 	c.dialOnce.Do(func() {}) // wait for existing calls to finish
 	if c.conn != nil {

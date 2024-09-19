@@ -26,6 +26,7 @@ type proxyEntry struct {
 	conn *net.UDPConn
 }
 
+// A Proxy is an RFC 9298 CONNECT-UDP proxy.
 type Proxy struct {
 	closed atomic.Bool
 
@@ -46,13 +47,13 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 
 	addr, err := net.ResolveUDPAddr("udp", r.Target)
 	if err != nil {
-		// TODO: set proxy-status header (might want to use structured headers)
+		// TODO(#2): set proxy-status header (might want to use structured headers)
 		w.WriteHeader(http.StatusGatewayTimeout)
 		return err
 	}
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
-		// TODO: set proxy-status header (might want to use structured headers)
+		// TODO(#2): set proxy-status header (might want to use structured headers)
 		w.WriteHeader(http.StatusGatewayTimeout)
 		return err
 	}
@@ -64,6 +65,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
+// It closes the connection before returning.
 func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
 	if s.closed.Load() {
 		conn.Close()
@@ -150,6 +152,7 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
 	}
 }
 
+// Close closes the proxy, immeidately terminating all proxied flows.
 func (s *Proxy) Close() error {
 	s.closed.Store(true)
 	s.mx.Lock()
