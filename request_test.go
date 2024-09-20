@@ -1,6 +1,7 @@
 package masque
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -12,11 +13,25 @@ import (
 func TestRequestParsing(t *testing.T) {
 	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
 
-	t.Run("invalid target port", func(t *testing.T) {
+	t.Run("valid request for a hostname", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque?h=localhost&p=1337")
 		r, err := ParseRequest(req, template)
 		require.NoError(t, err)
 		require.Equal(t, r.Target, "localhost:1337")
+	})
+
+	t.Run("valid request for an IPv4 address", func(t *testing.T) {
+		req := newRequest("https://localhost:1234/masque?h=1.2.3.4&p=9999")
+		r, err := ParseRequest(req, template)
+		require.NoError(t, err)
+		require.Equal(t, r.Target, "1.2.3.4:9999")
+	})
+
+	t.Run("valid request for an IPv6 address", func(t *testing.T) {
+		req := newRequest(fmt.Sprintf("https://localhost:1234/masque?h=%s&p=1234", escape("::1")))
+		r, err := ParseRequest(req, template)
+		require.NoError(t, err)
+		require.Equal(t, r.Target, "[::1]:1234")
 	})
 
 	t.Run("wrong request method", func(t *testing.T) {

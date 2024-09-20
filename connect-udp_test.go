@@ -23,9 +23,9 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-func runEchoServer(t *testing.T) *net.UDPConn {
+func runEchoServer(t *testing.T, addr *net.UDPAddr) *net.UDPConn {
 	t.Helper()
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	conn, err := net.ListenUDP("udp", addr)
 	require.NoError(t, err)
 	go func() {
 		for {
@@ -43,7 +43,12 @@ func runEchoServer(t *testing.T) *net.UDPConn {
 }
 
 func TestProxyToIP(t *testing.T) {
-	remoteServerConn := runEchoServer(t)
+	t.Run("IPv4", func(t *testing.T) { testProxyToIP(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}) })
+	t.Run("IPv6", func(t *testing.T) { testProxyToIP(t, &net.UDPAddr{IP: net.IPv6loopback, Port: 0}) })
+}
+
+func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
+	remoteServerConn := runEchoServer(t, addr)
 	defer remoteServerConn.Close()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -94,7 +99,7 @@ func TestProxyToIP(t *testing.T) {
 }
 
 func TestProxyToHostname(t *testing.T) {
-	remoteServerConn := runEchoServer(t)
+	remoteServerConn := runEchoServer(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	defer remoteServerConn.Close()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -197,7 +202,7 @@ func TestProxyToHostnameMissingPort(t *testing.T) {
 }
 
 func TestProxyShutdown(t *testing.T) {
-	remoteServerConn := runEchoServer(t)
+	remoteServerConn := runEchoServer(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	defer remoteServerConn.Close()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
