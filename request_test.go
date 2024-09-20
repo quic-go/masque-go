@@ -12,7 +12,7 @@ import (
 func TestRequestParsing(t *testing.T) {
 	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
 
-	t.Run("invalid target port", func(t *testing.T) {
+	t.Run("valid request", func(t *testing.T) {
 		req := newRequest("https://localhost:1234/masque?h=localhost&p=1337")
 		r, err := ParseRequest(req, template)
 		require.NoError(t, err)
@@ -33,6 +33,13 @@ func TestRequestParsing(t *testing.T) {
 		_, err := ParseRequest(req, template)
 		require.EqualError(t, err, "unexpected protocol: not-connect-udp")
 		require.Equal(t, http.StatusNotImplemented, err.(*RequestParseError).HTTPStatus)
+	})
+
+	t.Run("wrong :authority", func(t *testing.T) {
+		req := newRequest("https://quic-go.net:1234/masque")
+		_, err := ParseRequest(req, template)
+		require.EqualError(t, err, "host in :authority (quic-go.net:1234) does not match template host (localhost:1234)")
+		require.Equal(t, http.StatusBadRequest, err.(*RequestParseError).HTTPStatus)
 	})
 
 	t.Run("missing Capsule-Protocol header", func(t *testing.T) {

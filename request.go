@@ -46,6 +46,14 @@ func (e *RequestParseError) Unwrap() error { return e.Err }
 // ParseRequest parses a CONNECT-UDP request.
 // The template is the URI template that clients will use to configure this UDP proxy.
 func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, error) {
+	u, err := url.Parse(template.Raw())
+	if err != nil {
+		return nil, &RequestParseError{
+			HTTPStatus: http.StatusInternalServerError,
+			Err:        fmt.Errorf("failed to parse template: %w", err),
+		}
+	}
+
 	if r.Method != http.MethodConnect {
 		return nil, &RequestParseError{
 			HTTPStatus: http.StatusMethodNotAllowed,
@@ -58,7 +66,12 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 			Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
 		}
 	}
-	// TODO: check :authority
+	if r.Host != u.Host {
+		return nil, &RequestParseError{
+			HTTPStatus: http.StatusBadRequest,
+			Err:        fmt.Errorf("host in :authority (%s) does not match template host (%s)", r.Host, u.Host),
+		}
+	}
 	capsuleHeaderValues, ok := r.Header[capsuleHeader]
 	if !ok {
 		return nil, &RequestParseError{
