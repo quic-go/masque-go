@@ -73,7 +73,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 		<-closeStream
 		return 0, io.EOF
 	})
-	r, err := ParseRequest(req, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	r, err := ParseRequest(req, RequestParseOpts{ConnectUDPTemplate: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")})
 	require.NoError(t, err)
 	go p.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -99,7 +99,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 func TestProxyDialFailure(t *testing.T) {
 	p := Proxy{}
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
-	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	req, err := ParseRequest(r, RequestParseOpts{ConnectUDPTemplate: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")})
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
@@ -112,7 +112,7 @@ func TestProxyingAfterClose(t *testing.T) {
 	require.NoError(t, p.Close())
 
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
-	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	req, err := ParseRequest(r, RequestParseOpts{ConnectUDPTemplate: uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")})
 	require.NoError(t, err)
 
 	t.Run("proxying", func(t *testing.T) {

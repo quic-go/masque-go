@@ -43,17 +43,14 @@ type RequestParseError struct {
 func (e *RequestParseError) Error() string { return e.Err.Error() }
 func (e *RequestParseError) Unwrap() error { return e.Err }
 
+// RequestParseOpts is the set of options for ParseRequest.
+type RequestParseOpts struct {
+	ConnectUDPTemplate *uritemplate.Template
+}
+
 // ParseRequest parses a CONNECT-UDP request.
 // The template is the URI template that clients will use to configure this UDP proxy.
-func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, error) {
-	u, err := url.Parse(template.Raw())
-	if err != nil {
-		return nil, &RequestParseError{
-			HTTPStatus: http.StatusInternalServerError,
-			Err:        fmt.Errorf("failed to parse template: %w", err),
-		}
-	}
-
+func ParseRequest(r *http.Request, opts RequestParseOpts) (*Request, error) {
 	if r.Method != http.MethodConnect {
 		return nil, &RequestParseError{
 			HTTPStatus: http.StatusMethodNotAllowed,
@@ -64,6 +61,14 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 		return nil, &RequestParseError{
 			HTTPStatus: http.StatusNotImplemented,
 			Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
+		}
+	}
+	template := opts.ConnectUDPTemplate
+	u, err := url.Parse(template.Raw())
+	if err != nil {
+		return nil, &RequestParseError{
+			HTTPStatus: http.StatusInternalServerError,
+			Err:        fmt.Errorf("failed to parse template: %w", err),
 		}
 	}
 	if r.Host != u.Host {
