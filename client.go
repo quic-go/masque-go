@@ -67,7 +67,7 @@ func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, 
 		return nil, nil, errors.New("masque: no template")
 	}
 	str, err := c.Template.Expand(uritemplate.Values{
-		uriTemplateTargetHost: uritemplate.String(url.QueryEscape(raddr.IP.String())),
+		uriTemplateTargetHost: uritemplate.String(escape(raddr.IP.String())),
 		uriTemplateTargetPort: uritemplate.String(strconv.Itoa(raddr.Port)),
 	})
 	if err != nil {

@@ -3,9 +3,9 @@ package masque
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/dunglas/httpsfv"
 	"github.com/yosida95/uritemplate/v3"
@@ -86,20 +86,17 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	}
 
 	match := template.Match(r.URL.String())
-	targetHostEncoded := match.Get(uriTemplateTargetHost).String()
+	targetHost := unescape(match.Get(uriTemplateTargetHost).String())
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
-	if targetHostEncoded == "" || targetPortStr == "" {
+	if targetHost == "" || targetPortStr == "" {
 		return nil, &RequestParseError{
 			HTTPStatus: http.StatusBadRequest,
 			Err:        fmt.Errorf("expected target_host and target_port"),
 		}
 	}
-	targetHost, err := url.QueryUnescape(targetHostEncoded)
-	if err != nil {
-		return nil, &RequestParseError{
-			HTTPStatus: http.StatusBadRequest,
-			Err:        fmt.Errorf("failed to decode target_host: %w", err),
-		}
+	// IPv6 addresses need to be enclosed in [], otherwise resolving the address will fail.
+	if strings.Contains(targetHost, ":") {
+		targetHost = "[" + targetHost + "]"
 	}
 	targetPort, err := strconv.Atoi(targetPortStr)
 	if err != nil {
@@ -110,3 +107,6 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	}
 	return &Request{Target: fmt.Sprintf("%s:%d", targetHost, targetPort)}, nil
 }
+
+func escape(s string) string   { return strings.ReplaceAll(s, ":", "%3A") }
+func unescape(s string) string { return strings.ReplaceAll(s, "%3A", ":") }
