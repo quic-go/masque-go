@@ -43,6 +43,24 @@ func TestParseAddressAssignCapsule(t *testing.T) {
 	require.Zero(t, r.Len())
 }
 
+func TestWriteAddressAssignCapsule(t *testing.T) {
+	c := &addressAssignCapsule{
+		AssignedAddresses: []AssignedAddress{
+			{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.0/24")},
+			{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
+		},
+	}
+	buf := &bytes.Buffer{}
+	require.NoError(t, c.marshal(buf))
+	typ, cr, err := http3.ParseCapsule(buf)
+	require.NoError(t, err)
+	require.Equal(t, capsuleTypeAddressAssign, typ)
+	parsed, err := parseAddressAssignCapsule(cr)
+	require.NoError(t, err)
+	require.Equal(t, c, parsed)
+	require.Zero(t, buf.Len())
+}
+
 func TestParseAddressAssignCapsuleInvalid(t *testing.T) {
 	testParseAddressCapsuleInvalid(t, capsuleTypeAddressAssign, func(r io.Reader) error {
 		_, err := parseAddressAssignCapsule(quicvarint.NewReader(r))
@@ -156,6 +174,24 @@ func TestParseAddressRequestCapsule(t *testing.T) {
 	require.Zero(t, r.Len())
 }
 
+func TestWriteAddressRequestCapsule(t *testing.T) {
+	c := &addressRequestCapsule{
+		RequestedAddresses: []RequestedAddress{
+			{RequestID: 1337, IPPrefix: netip.MustParsePrefix("1.2.3.0/24")},
+			{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
+		},
+	}
+	buf := &bytes.Buffer{}
+	require.NoError(t, c.marshal(buf))
+	typ, cr, err := http3.ParseCapsule(buf)
+	require.NoError(t, err)
+	require.Equal(t, capsuleTypeAddressRequest, typ)
+	parsed, err := parseAddressRequestCapsule(cr)
+	require.NoError(t, err)
+	require.Equal(t, c, parsed)
+	require.Zero(t, buf.Len())
+}
+
 func TestParseAddressRequestCapsuleInvalid(t *testing.T) {
 	testParseAddressCapsuleInvalid(t, capsuleTypeAddressRequest, func(r io.Reader) error {
 		_, err := parseAddressRequestCapsule(quicvarint.NewReader(r))
@@ -192,6 +228,24 @@ func TestParseRouteAdvertisementCapsule(t *testing.T) {
 		capsule.IPAddressRanges,
 	)
 	require.Zero(t, r.Len())
+}
+
+func TestWriteRouteAdvertisementCapsule(t *testing.T) {
+	c := &routeAdvertisementCapsule{
+		IPAddressRanges: []IPAddressRange{
+			{StartIP: netip.MustParseAddr("1.1.1.1"), EndIP: netip.MustParseAddr("1.2.3.4"), IPProtocol: 13},
+			{StartIP: netip.MustParseAddr("2001:db8::1"), EndIP: netip.MustParseAddr("2001:db8::100"), IPProtocol: 37},
+		},
+	}
+	buf := &bytes.Buffer{}
+	require.NoError(t, c.marshal(buf))
+	typ, cr, err := http3.ParseCapsule(buf)
+	require.NoError(t, err)
+	require.Equal(t, capsuleTypeRouteAdvertisement, typ)
+	parsed, err := parseRouteAdvertisementCapsule(cr)
+	require.NoError(t, err)
+	require.Equal(t, c, parsed)
+	require.Zero(t, buf.Len())
 }
 
 func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
