@@ -1,6 +1,7 @@
 package masque
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +12,9 @@ import (
 )
 
 const (
-	capsuleTypeAddressAssign  http3.CapsuleType = 1
-	capsuleTypeAddressRequest http3.CapsuleType = 2
+	capsuleTypeAddressAssign      http3.CapsuleType = 1
+	capsuleTypeAddressRequest     http3.CapsuleType = 2
+	capsuleTypeRouteAdvertisement http3.CapsuleType = 3
 )
 
 // addressAssignCapsule represents an ADDRESS_ASSIGN capsule
@@ -106,4 +108,78 @@ func parseAddress(r io.Reader) (requestID uint64, prefix netip.Prefix, _ error) 
 		return 0, netip.Prefix{}, errors.New("lower bits not covered by prefix length are not all zero")
 	}
 	return requestID, prefix, nil
+}
+
+// routeAdvertisementCapsule represents a ROUTE_ADVERTISEMENT capsule
+type routeAdvertisementCapsule struct {
+	IPAddressRanges []IPAddressRange
+}
+
+// IPAddressRange represents an IP Address Range within a ROUTE_ADVERTISEMENT capsule
+type IPAddressRange struct {
+	StartIP    netip.Addr
+	EndIP      netip.Addr
+	IPProtocol uint8
+}
+
+func parseRouteAdvertisementCapsule(r io.Reader) (*routeAdvertisementCapsule, error) {
+	var ranges []IPAddressRange
+	for {
+		ipRange, err := parseIPAddressRange(r)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		ranges = append(ranges, ipRange)
+	}
+	return &routeAdvertisementCapsule{IPAddressRanges: ranges}, nil
+}
+
+func parseIPAddressRange(r io.Reader) (IPAddressRange, error) {
+	var ipVersion uint8
+	if err := binary.Read(r, binary.LittleEndian, &ipVersion); err != nil {
+		return IPAddressRange{}, err
+	}
+
+	var startIP, endIP netip.Addr
+	switch ipVersion {
+	case 4:
+		var start, end [4]byte
+		if _, err := io.ReadFull(r, start[:]); err != nil {
+			return IPAddressRange{}, err
+		}
+		if _, err := io.ReadFull(r, end[:]); err != nil {
+			return IPAddressRange{}, err
+		}
+		startIP = netip.AddrFrom4(start)
+		endIP = netip.AddrFrom4(end)
+	case 6:
+		var start, end [16]byte
+		if _, err := io.ReadFull(r, start[:]); err != nil {
+			return IPAddressRange{}, err
+		}
+		if _, err := io.ReadFull(r, end[:]); err != nil {
+			return IPAddressRange{}, err
+		}
+		startIP = netip.AddrFrom16(start)
+		endIP = netip.AddrFrom16(end)
+	default:
+		return IPAddressRange{}, fmt.Errorf("invalid IP version: %d", ipVersion)
+	}
+
+	if startIP.Compare(endIP) > 0 {
+		return IPAddressRange{}, errors.New("start IP is greater than end IP")
+	}
+
+	var ipProtocol uint8
+	if err := binary.Read(r, binary.LittleEndian, &ipProtocol); err != nil {
+		return IPAddressRange{}, err
+	}
+	return IPAddressRange{
+		StartIP:    startIP,
+		EndIP:      endIP,
+		IPProtocol: ipProtocol,
+	}, nil
 }

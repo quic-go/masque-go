@@ -162,3 +162,102 @@ func TestParseAddressRequestCapsuleInvalid(t *testing.T) {
 		return err
 	})
 }
+
+func TestParseRouteAdvertisementCapsule(t *testing.T) {
+	iprange1 := []byte{4}                                                          // IPv4
+	iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 1, 1, 1}).AsSlice()...) // Start IP
+	iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 2, 3, 4}).AsSlice()...) // End IP
+	iprange1 = append(iprange1, 13)                                                // IP Protocol
+	iprange2 := []byte{6}                                                          // IPv6
+	iprange2 = append(iprange2, netip.MustParseAddr("2001:db8::1").AsSlice()...)   // Start IP
+	iprange2 = append(iprange2, netip.MustParseAddr("2001:db8::100").AsSlice()...) // End IP
+	iprange2 = append(iprange2, 37)                                                // IP Protocol
+
+	data := quicvarint.Append(nil, uint64(capsuleTypeRouteAdvertisement))
+	data = quicvarint.Append(data, uint64(len(iprange1)+len(iprange2))) // Length
+	data = append(data, iprange1...)
+	data = append(data, iprange2...)
+
+	r := bytes.NewReader(data)
+	typ, cr, err := http3.ParseCapsule(r)
+	require.NoError(t, err)
+	require.Equal(t, capsuleTypeRouteAdvertisement, typ)
+	capsule, err := parseRouteAdvertisementCapsule(cr)
+	require.NoError(t, err)
+	require.Equal(t,
+		[]IPAddressRange{
+			{StartIP: netip.MustParseAddr("1.1.1.1"), EndIP: netip.MustParseAddr("1.2.3.4"), IPProtocol: 13},
+			{StartIP: netip.MustParseAddr("2001:db8::1"), EndIP: netip.MustParseAddr("2001:db8::100"), IPProtocol: 37},
+		},
+		capsule.IPAddressRanges,
+	)
+	require.Zero(t, r.Len())
+}
+
+func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
+	t.Run("invalid IP version", func(t *testing.T) {
+		iprange1 := []byte{5}                                                          // IPv5
+		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 1, 1, 1}).AsSlice()...) // Start IP
+		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 1, 1, 2}).AsSlice()...) // End IP
+		iprange1 = append(iprange1, 13)                                                // IP Protocol
+		data := quicvarint.Append(nil, uint64(capsuleTypeRouteAdvertisement))
+		data = quicvarint.Append(data, uint64(len(iprange1))) // Length
+		data = append(data, iprange1...)
+		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		require.NoError(t, err)
+		_, err = parseRouteAdvertisementCapsule(cr)
+		require.ErrorContains(t, err, "invalid IP version: 5")
+	})
+
+	t.Run("start IP is greater than end IP", func(t *testing.T) {
+		iprange1 := []byte{4}                                                          // IPv4
+		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 2, 3, 4}).AsSlice()...) // Start IP
+		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 1, 1, 1}).AsSlice()...) // End IP
+		iprange1 = append(iprange1, 13)                                                // IP Protocol
+		data := quicvarint.Append(nil, uint64(capsuleTypeRouteAdvertisement))
+		data = quicvarint.Append(data, uint64(len(iprange1))) // Length
+		data = append(data, iprange1...)
+
+		_, cr, err := http3.ParseCapsule(bytes.NewReader(data))
+		require.NoError(t, err)
+		_, err = parseRouteAdvertisementCapsule(cr)
+		require.ErrorContains(t, err, "start IP is greater than end IP")
+	})
+
+	t.Run("incomplete capsule", func(t *testing.T) {
+		iprange1 := []byte{4}                                                          // IPv4
+		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{1, 1, 1, 1}).AsSlice()...) // Start IP
+		iprange1 = append(iprange1, netip.AddrFrom4([4]byte{2, 2, 2, 2}).AsSlice()...) // End IP
+		iprange1 = append(iprange1, 13)                                                // IP Protocol
+
+		iprange2 := []byte{6}                                                          // IPv6
+		iprange2 = append(iprange2, netip.MustParseAddr("2001:db8::1").AsSlice()...)   // Start IP
+		iprange2 = append(iprange2, netip.MustParseAddr("2001:db8::100").AsSlice()...) // End IP
+		iprange2 = append(iprange2, 37)                                                // IP Protocol
+
+		data := quicvarint.Append(nil, uint64(capsuleTypeRouteAdvertisement))
+		data = quicvarint.Append(data, uint64(len(iprange1)+len(iprange2))) // Length
+		data = append(data, iprange1...)
+		data = append(data, iprange2...)
+
+		r := bytes.NewReader(data)
+		_, cr, err := http3.ParseCapsule(r)
+		require.NoError(t, err)
+		_, err = parseRouteAdvertisementCapsule(cr)
+		require.NoError(t, err)
+		require.Zero(t, r.Len())
+		for i := range data {
+			_, cr, err := http3.ParseCapsule(bytes.NewReader(data[:i]))
+			if err != nil {
+				if i == 0 {
+					require.ErrorIs(t, err, io.EOF)
+				} else {
+					require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+				}
+				continue
+			}
+			_, err = parseRouteAdvertisementCapsule(cr)
+			require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		}
+	})
+}
