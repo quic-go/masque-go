@@ -54,7 +54,7 @@ func main() {
 		log.Fatalf("failed to parse URI template: %v", err)
 	}
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
+		req, err := masque.ParseConnectUDPRequest(r, template)
 		if err != nil {
 			var perr *masque.RequestParseError
 			if errors.As(err, &perr) {
