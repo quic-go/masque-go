@@ -164,20 +164,22 @@ func parseAddress(r io.Reader) (requestID uint64, prefix netip.Prefix, _ error) 
 
 // routeAdvertisementCapsule represents a ROUTE_ADVERTISEMENT capsule
 type routeAdvertisementCapsule struct {
-	IPAddressRanges []IPAddressRange
+	IPAddressRanges []IPRoute
 }
 
-// IPAddressRange represents an IP Address Range within a ROUTE_ADVERTISEMENT capsule
-type IPAddressRange struct {
-	StartIP    netip.Addr
-	EndIP      netip.Addr
+// IPRoute represents an IP Address Range
+type IPRoute struct {
+	StartIP netip.Addr
+	EndIP   netip.Addr
+	// IPProtocol is the Internet Protocol Number for traffic that can be sent to this range.
+	// If the value is 0, all protocols are allowed.
 	IPProtocol uint8
 }
 
-func (r IPAddressRange) len() int { return 1 + r.StartIP.BitLen()/8 + r.EndIP.BitLen()/8 + 1 }
+func (r IPRoute) len() int { return 1 + r.StartIP.BitLen()/8 + r.EndIP.BitLen()/8 + 1 }
 
 func parseRouteAdvertisementCapsule(r io.Reader) (*routeAdvertisementCapsule, error) {
-	var ranges []IPAddressRange
+	var ranges []IPRoute
 	for {
 		ipRange, err := parseIPAddressRange(r)
 		if err != nil {
@@ -213,10 +215,10 @@ func (c *routeAdvertisementCapsule) append(b []byte) []byte {
 	return b
 }
 
-func parseIPAddressRange(r io.Reader) (IPAddressRange, error) {
+func parseIPAddressRange(r io.Reader) (IPRoute, error) {
 	var ipVersion uint8
 	if err := binary.Read(r, binary.LittleEndian, &ipVersion); err != nil {
-		return IPAddressRange{}, err
+		return IPRoute{}, err
 	}
 
 	var startIP, endIP netip.Addr
@@ -224,36 +226,36 @@ func parseIPAddressRange(r io.Reader) (IPAddressRange, error) {
 	case 4:
 		var start, end [4]byte
 		if _, err := io.ReadFull(r, start[:]); err != nil {
-			return IPAddressRange{}, err
+			return IPRoute{}, err
 		}
 		if _, err := io.ReadFull(r, end[:]); err != nil {
-			return IPAddressRange{}, err
+			return IPRoute{}, err
 		}
 		startIP = netip.AddrFrom4(start)
 		endIP = netip.AddrFrom4(end)
 	case 6:
 		var start, end [16]byte
 		if _, err := io.ReadFull(r, start[:]); err != nil {
-			return IPAddressRange{}, err
+			return IPRoute{}, err
 		}
 		if _, err := io.ReadFull(r, end[:]); err != nil {
-			return IPAddressRange{}, err
+			return IPRoute{}, err
 		}
 		startIP = netip.AddrFrom16(start)
 		endIP = netip.AddrFrom16(end)
 	default:
-		return IPAddressRange{}, fmt.Errorf("invalid IP version: %d", ipVersion)
+		return IPRoute{}, fmt.Errorf("invalid IP version: %d", ipVersion)
 	}
 
 	if startIP.Compare(endIP) > 0 {
-		return IPAddressRange{}, errors.New("start IP is greater than end IP")
+		return IPRoute{}, errors.New("start IP is greater than end IP")
 	}
 
 	var ipProtocol uint8
 	if err := binary.Read(r, binary.LittleEndian, &ipProtocol); err != nil {
-		return IPAddressRange{}, err
+		return IPRoute{}, err
 	}
-	return IPAddressRange{
+	return IPRoute{
 		StartIP:    startIP,
 		EndIP:      endIP,
 		IPProtocol: ipProtocol,

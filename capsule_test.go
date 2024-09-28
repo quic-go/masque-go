@@ -221,7 +221,7 @@ func TestParseRouteAdvertisementCapsule(t *testing.T) {
 	capsule, err := parseRouteAdvertisementCapsule(cr)
 	require.NoError(t, err)
 	require.Equal(t,
-		[]IPAddressRange{
+		[]IPRoute{
 			{StartIP: netip.MustParseAddr("1.1.1.1"), EndIP: netip.MustParseAddr("1.2.3.4"), IPProtocol: 13},
 			{StartIP: netip.MustParseAddr("2001:db8::1"), EndIP: netip.MustParseAddr("2001:db8::100"), IPProtocol: 37},
 		},
@@ -232,7 +232,7 @@ func TestParseRouteAdvertisementCapsule(t *testing.T) {
 
 func TestWriteRouteAdvertisementCapsule(t *testing.T) {
 	c := &routeAdvertisementCapsule{
-		IPAddressRanges: []IPAddressRange{
+		IPAddressRanges: []IPRoute{
 			{StartIP: netip.MustParseAddr("1.1.1.1"), EndIP: netip.MustParseAddr("1.2.3.4"), IPProtocol: 13},
 			{StartIP: netip.MustParseAddr("2001:db8::1"), EndIP: netip.MustParseAddr("2001:db8::100"), IPProtocol: 37},
 		},
