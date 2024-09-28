@@ -65,7 +65,7 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.UDPProxy{}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseConnectUDPRequest(r, template)
@@ -116,7 +116,7 @@ func TestProxyToHostname(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.UDPProxy{}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseConnectUDPRequest(r, template)
@@ -171,7 +171,7 @@ func TestProxyingRejected(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.UDPProxy{}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	go func() {
@@ -219,7 +219,7 @@ func TestProxyShutdown(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.UDPProxy{}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseConnectUDPRequest(r, template)
 		if err != nil {

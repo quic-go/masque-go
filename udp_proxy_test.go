@@ -42,7 +42,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	remoteServerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
 
-	p := Proxy{}
+	p := UDPProxy{}
 	req := newConnectUDPRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -89,7 +89,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 }
 
 func TestProxyDialFailure(t *testing.T) {
-	p := Proxy{}
+	p := UDPProxy{}
 	r := newConnectUDPRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
 	req, err := ParseConnectUDPRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestProxyDialFailure(t *testing.T) {
 }
 
 func TestProxyingAfterClose(t *testing.T) {
-	p := &Proxy{}
+	p := &UDPProxy{}
 	require.NoError(t, p.Close())
 
 	r := newConnectUDPRequest("https://localhost:1234/masque?h=localhost&p=1234")

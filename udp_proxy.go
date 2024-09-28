@@ -21,8 +21,8 @@ type proxyEntry struct {
 	conn *net.UDPConn
 }
 
-// A Proxy is an RFC 9298 CONNECT-UDP proxy.
-type Proxy struct {
+// A UDPProxy is an RFC 9298 CONNECT-UDP proxy.
+type UDPProxy struct {
 	closed atomic.Bool
 
 	mx       sync.Mutex
@@ -34,7 +34,7 @@ type Proxy struct {
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
-func (s *Proxy) Proxy(w http.ResponseWriter, r *ConnectUDPRequest) error {
+func (s *UDPProxy) Proxy(w http.ResponseWriter, r *ConnectUDPRequest) error {
 	if s.closed.Load() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return net.ErrClosed
@@ -61,7 +61,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *ConnectUDPRequest) error {
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
 // It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ConnectUDPRequest, conn *net.UDPConn) error {
+func (s *UDPProxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ConnectUDPRequest, conn *net.UDPConn) error {
 	if s.closed.Load() {
 		conn.Close()
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -111,7 +111,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ConnectUDPRequest
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
+func (s *UDPProxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
@@ -131,7 +131,7 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
+func (s *UDPProxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
 	b := make([]byte, 1500)
 	for {
 		n, err := conn.Read(b)
@@ -148,7 +148,7 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
 }
 
 // Close closes the proxy, immeidately terminating all proxied flows.
-func (s *Proxy) Close() error {
+func (s *UDPProxy) Close() error {
 	s.closed.Store(true)
 	s.mx.Lock()
 	for entry := range s.conns {

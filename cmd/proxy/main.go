@@ -47,7 +47,7 @@ func main() {
 		Logger:          slog.Default(),
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.UDPProxy{}
 	// parse the template to extract the path for the HTTP handler
 	u, err := url.Parse(templateStr)
 	if err != nil {
