@@ -50,15 +50,15 @@ func TestWriteAddressAssignCapsule(t *testing.T) {
 			{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
 		},
 	}
-	buf := &bytes.Buffer{}
-	require.NoError(t, c.marshal(buf))
-	typ, cr, err := http3.ParseCapsule(buf)
+	data := c.append(nil)
+	r := bytes.NewReader(data)
+	typ, cr, err := http3.ParseCapsule(r)
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeAddressAssign, typ)
 	parsed, err := parseAddressAssignCapsule(cr)
 	require.NoError(t, err)
 	require.Equal(t, c, parsed)
-	require.Zero(t, buf.Len())
+	require.Zero(t, r.Len())
 }
 
 func TestParseAddressAssignCapsuleInvalid(t *testing.T) {
@@ -181,15 +181,15 @@ func TestWriteAddressRequestCapsule(t *testing.T) {
 			{RequestID: 1338, IPPrefix: netip.MustParsePrefix("2001:db8::1/128")},
 		},
 	}
-	buf := &bytes.Buffer{}
-	require.NoError(t, c.marshal(buf))
-	typ, cr, err := http3.ParseCapsule(buf)
+	data := c.append(nil)
+	r := bytes.NewReader(data)
+	typ, cr, err := http3.ParseCapsule(r)
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeAddressRequest, typ)
 	parsed, err := parseAddressRequestCapsule(cr)
 	require.NoError(t, err)
 	require.Equal(t, c, parsed)
-	require.Zero(t, buf.Len())
+	require.Zero(t, r.Len())
 }
 
 func TestParseAddressRequestCapsuleInvalid(t *testing.T) {
@@ -237,15 +237,15 @@ func TestWriteRouteAdvertisementCapsule(t *testing.T) {
 			{StartIP: netip.MustParseAddr("2001:db8::1"), EndIP: netip.MustParseAddr("2001:db8::100"), IPProtocol: 37},
 		},
 	}
-	buf := &bytes.Buffer{}
-	require.NoError(t, c.marshal(buf))
-	typ, cr, err := http3.ParseCapsule(buf)
+	data := c.append(nil)
+	r := bytes.NewReader(data)
+	typ, cr, err := http3.ParseCapsule(r)
 	require.NoError(t, err)
 	require.Equal(t, capsuleTypeRouteAdvertisement, typ)
 	parsed, err := parseRouteAdvertisementCapsule(cr)
 	require.NoError(t, err)
 	require.Equal(t, c, parsed)
-	require.Zero(t, buf.Len())
+	require.Zero(t, r.Len())
 }
 
 func TestParseRouteAdvertisementCapsuleInvalid(t *testing.T) {
