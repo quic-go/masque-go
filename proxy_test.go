@@ -26,14 +26,6 @@ func scaleDuration(d time.Duration) time.Duration {
 	return d
 }
 
-func newRequest(target string) *http.Request {
-	req := httptest.NewRequest(http.MethodGet, target, nil)
-	req.Method = http.MethodConnect
-	req.Proto = requestProtocol
-	req.Header.Add("Capsule-Protocol", capsuleProtocolHeaderValue)
-	return req
-}
-
 type http3ResponseWriter struct {
 	http.ResponseWriter
 	str http3.Stream
@@ -51,7 +43,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	require.NoError(t, err)
 
 	p := Proxy{}
-	req := newRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
+	req := newConnectUDPRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	str := NewMockStream(gomock.NewController(t))
@@ -73,7 +65,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 		<-closeStream
 		return 0, io.EOF
 	})
-	r, err := ParseRequest(req, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	r, err := ParseConnectUDPRequest(req, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
 	go p.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -98,8 +90,8 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 
 func TestProxyDialFailure(t *testing.T) {
 	p := Proxy{}
-	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
-	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	r := newConnectUDPRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
+	req, err := ParseConnectUDPRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
@@ -111,8 +103,8 @@ func TestProxyingAfterClose(t *testing.T) {
 	p := &Proxy{}
 	require.NoError(t, p.Close())
 
-	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
-	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	r := newConnectUDPRequest("https://localhost:1234/masque?h=localhost&p=1234")
+	req, err := ParseConnectUDPRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
 
 	t.Run("proxying", func(t *testing.T) {

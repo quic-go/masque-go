@@ -52,8 +52,8 @@ func (c *Client) DialAddr(ctx context.Context, target string) (net.PacketConn, *
 		return nil, nil, fmt.Errorf("failed to parse target: %w", err)
 	}
 	str, err := c.Template.Expand(uritemplate.Values{
-		uriTemplateTargetHost: uritemplate.String(host),
-		uriTemplateTargetPort: uritemplate.String(port),
+		connectUDPTemplateTargetHost: uritemplate.String(host),
+		connectUDPTemplateTargetPort: uritemplate.String(port),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
@@ -67,8 +67,8 @@ func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, 
 		return nil, nil, errors.New("masque: no template")
 	}
 	str, err := c.Template.Expand(uritemplate.Values{
-		uriTemplateTargetHost: uritemplate.String(escape(raddr.IP.String())),
-		uriTemplateTargetPort: uritemplate.String(strconv.Itoa(raddr.Port)),
+		connectUDPTemplateTargetHost: uritemplate.String(escape(raddr.IP.String())),
+		connectUDPTemplateTargetPort: uritemplate.String(strconv.Itoa(raddr.Port)),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
@@ -134,7 +134,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 	}
 	if err := rstr.SendRequestHeader(&http.Request{
 		Method: http.MethodConnect,
-		Proto:  requestProtocol,
+		Proto:  connectUDPRequestProtocol,
 		Host:   u.Host,
 		Header: http.Header{capsuleHeader: []string{capsuleProtocolHeaderValue}},
 		URL:    u,
