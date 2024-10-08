@@ -20,13 +20,9 @@ import (
 // This allows tunneling QUIC connections, which themselves have a minimum MTU requirement of 1200 bytes.
 const defaultInitialPacketSize = 1350
 
-// A Client establishes proxied connections to remote hosts,
-// using a UDP proxy.
+// A Client establishes proxied connections to remote hosts, using a UDP proxy.
 // Multiple flows can be proxied via the same connection to the proxy.
 type Client struct {
-	// Template is the URI template of the UDP proxy.
-	Template *uritemplate.Template
-
 	// TLSClientConfig is the TLS client config used when dialing the QUIC connection to the proxy.
 	// It must set the "h3" ALPN.
 	TLSClientConfig *tls.Config
@@ -43,15 +39,12 @@ type Client struct {
 // DialAddr dials a proxied connection to a target server.
 // The target address is sent to the proxy, and the DNS resolution is left to the proxy.
 // The target must be given as a host:port.
-func (c *Client) DialAddr(ctx context.Context, target string) (net.PacketConn, *http.Response, error) {
-	if c.Template == nil {
-		return nil, nil, errors.New("masque: no template")
-	}
+func (c *Client) DialAddr(ctx context.Context, proxyTemplate *uritemplate.Template, target string) (net.PacketConn, *http.Response, error) {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse target: %w", err)
 	}
-	str, err := c.Template.Expand(uritemplate.Values{
+	str, err := proxyTemplate.Expand(uritemplate.Values{
 		uriTemplateTargetHost: uritemplate.String(host),
 		uriTemplateTargetPort: uritemplate.String(port),
 	})
@@ -62,11 +55,8 @@ func (c *Client) DialAddr(ctx context.Context, target string) (net.PacketConn, *
 }
 
 // Dial dials a proxied connection to a target server.
-func (c *Client) Dial(ctx context.Context, raddr *net.UDPAddr) (net.PacketConn, *http.Response, error) {
-	if c.Template == nil {
-		return nil, nil, errors.New("masque: no template")
-	}
-	str, err := c.Template.Expand(uritemplate.Values{
+func (c *Client) Dial(ctx context.Context, proxyTemplate *uritemplate.Template, raddr *net.UDPAddr) (net.PacketConn, *http.Response, error) {
+	str, err := proxyTemplate.Expand(uritemplate.Values{
 		uriTemplateTargetHost: uritemplate.String(escape(raddr.IP.String())),
 		uriTemplateTargetPort: uritemplate.String(strconv.Itoa(raddr.Port)),
 	})

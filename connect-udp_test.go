@@ -83,11 +83,14 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 	}()
 
 	cl := masque.Client{
-		Template:        template,
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
 	defer cl.Close()
-	proxiedConn, _, err := cl.Dial(context.Background(), remoteServerConn.LocalAddr().(*net.UDPAddr))
+	proxiedConn, _, err := cl.Dial(
+		context.Background(),
+		template,
+		remoteServerConn.LocalAddr().(*net.UDPAddr),
+	)
 	require.NoError(t, err)
 
 	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
@@ -141,11 +144,10 @@ func TestProxyToHostname(t *testing.T) {
 	}()
 
 	cl := masque.Client{
-		Template:        template,
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
 	defer cl.Close()
-	proxiedConn, rsp, err := cl.DialAddr(context.Background(), "quic-go.net:1234") // the proxy doesn't actually resolve this hostname
+	proxiedConn, rsp, err := cl.DialAddr(context.Background(), template, "quic-go.net:1234") // the proxy doesn't actually resolve this hostname
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
@@ -181,22 +183,24 @@ func TestProxyingRejected(t *testing.T) {
 	}()
 
 	cl := masque.Client{
-		Template:        template,
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
 	defer cl.Close()
-	_, rsp, err := cl.DialAddr(context.Background(), "quic-go.net:1234") // the proxy doesn't actually resolve this hostname
+	_, rsp, err := cl.DialAddr(context.Background(), template, "quic-go.net:1234") // the proxy doesn't actually resolve this hostname
 	require.Error(t, err)
 	require.Equal(t, http.StatusTeapot, rsp.StatusCode)
 }
 
 func TestProxyToHostnameMissingPort(t *testing.T) {
 	cl := masque.Client{
-		Template:        uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
 	defer cl.Close()
-	_, rsp, err := cl.DialAddr(context.Background(), "quic-go.net") // missing port
+	_, rsp, err := cl.DialAddr(
+		context.Background(),
+		uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"),
+		"quic-go.net", // missing port
+	)
 	require.Nil(t, rsp)
 	require.ErrorContains(t, err, "address quic-go.net: missing port in address")
 }
@@ -236,11 +240,10 @@ func TestProxyShutdown(t *testing.T) {
 	}()
 
 	cl := masque.Client{
-		Template:        template,
 		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
 	}
 	defer cl.Close()
-	proxiedConn, rsp, err := cl.Dial(context.Background(), remoteServerConn.LocalAddr().(*net.UDPAddr))
+	proxiedConn, rsp, err := cl.Dial(context.Background(), template, remoteServerConn.LocalAddr().(*net.UDPAddr))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
