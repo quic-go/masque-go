@@ -133,7 +133,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 		Method: http.MethodConnect,
 		Proto:  requestProtocol,
 		Host:   u.Host,
-		Header: http.Header{capsuleHeader: []string{capsuleProtocolHeaderValue}},
+		Header: http.Header{http3.CapsuleProtocolHeader: []string{capsuleProtocolHeaderValue}},
 		URL:    u,
 	}); err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
