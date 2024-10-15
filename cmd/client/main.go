@@ -46,7 +46,7 @@ func main() {
 	}
 
 	hcl := &http.Client{
-		Transport: &http3.RoundTripper{
+		Transport: &http3.Transport{
 			Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (quic.EarlyConnection, error) {
 				raddr, err := net.ResolveUDPAddr("udp", host+":"+strconv.Itoa(int(port)))
 				if err != nil {

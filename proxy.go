@@ -76,7 +76,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	s.refCount.Add(1)
 	defer s.refCount.Done()
 
-	w.Header().Set(capsuleHeader, capsuleProtocolHeaderValue)
+	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
 
 	str := w.(http3.HTTPStreamer).HTTPStream()

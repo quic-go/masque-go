@@ -34,10 +34,10 @@ type Client struct {
 	// QUICConfig is the QUIC config used when dialing the QUIC connection.
 	QUICConfig *quic.Config
 
-	dialOnce sync.Once
-	dialErr  error
-	conn     quic.Connection
-	rt       *http3.SingleDestinationRoundTripper
+	dialOnce   sync.Once
+	dialErr    error
+	conn       quic.Connection
+	clientConn *http3.ClientConn
 }
 
 // DialAddr dials a proxied connection to a target server.
@@ -104,23 +104,20 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 			return
 		}
 		c.conn = conn
-		c.rt = &http3.SingleDestinationRoundTripper{
-			Connection:      conn,
-			EnableDatagrams: true,
-		}
+		tr := &http3.Transport{EnableDatagrams: true}
+		c.clientConn = tr.NewClientConn(conn)
 	})
 	if c.dialErr != nil {
 		return nil, nil, c.dialErr
 	}
-	conn := c.rt.Start()
 	select {
 	case <-ctx.Done():
 		return nil, nil, context.Cause(ctx)
-	case <-conn.Context().Done():
-		return nil, nil, context.Cause(conn.Context())
-	case <-conn.ReceivedSettings():
+	case <-c.clientConn.Context().Done():
+		return nil, nil, context.Cause(c.clientConn.Context())
+	case <-c.clientConn.ReceivedSettings():
 	}
-	settings := conn.Settings()
+	settings := c.clientConn.Settings()
 	if !settings.EnableExtendedConnect {
 		return nil, nil, errors.New("masque: server didn't enable Extended CONNECT")
 	}
@@ -128,7 +125,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 		return nil, nil, errors.New("masque: server didn't enable Datagrams")
 	}
 
-	rstr, err := c.rt.OpenRequestStream(ctx)
+	rstr, err := c.clientConn.OpenRequestStream(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to open request stream: %w", err)
 	}
@@ -136,7 +133,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 		Method: http.MethodConnect,
 		Proto:  requestProtocol,
 		Host:   u.Host,
-		Header: http.Header{capsuleHeader: []string{capsuleProtocolHeaderValue}},
+		Header: http.Header{http3.CapsuleProtocolHeader: []string{capsuleProtocolHeaderValue}},
 		URL:    u,
 	}); err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
@@ -149,7 +146,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, rsp, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
-	return newProxiedConn(rstr, conn.LocalAddr()), rsp, nil
+	return newProxiedConn(rstr, c.conn.LocalAddr()), rsp, nil
 }
 
 // Close closes the connection to the proxy.
