@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/dunglas/httpsfv v1.0.2
-	github.com/quic-go/quic-go v0.48.0
+	github.com/quic-go/quic-go v0.48.1
 	github.com/stretchr/testify v1.9.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	go.uber.org/goleak v1.3.0
