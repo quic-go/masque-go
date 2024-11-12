@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -51,7 +51,7 @@ func newProxiedConn(str http3.Stream, local net.Addr) *proxiedConn {
 	go func() {
 		defer close(c.readDone)
 		if err := skipCapsules(quicvarint.NewReader(str)); err != io.EOF && !c.closed.Load() {
-			log.Printf("reading from request stream failed: %v", err)
+			slog.Error("reading from request stream failed", "err", err)
 		}
 		str.Close()
 	}()
@@ -175,7 +175,7 @@ func skipCapsules(str quicvarint.Reader) error {
 		if err != nil {
 			return err
 		}
-		log.Printf("skipping capsule of type %d", ct)
+		slog.Info("skipping capsule", "type", ct)
 		if _, err := io.Copy(io.Discard, r); err != nil {
 			return err
 		}

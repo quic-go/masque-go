@@ -6,8 +6,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"log"
+	"log/slog"
 	"math/big"
+	"os"
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
@@ -71,11 +72,13 @@ func generateLeafCert(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*x509
 func init() {
 	ca, caPrivateKey, err := generateCA()
 	if err != nil {
-		log.Fatal("failed to generate CA certificate:", err)
+		slog.Error("failed to generate CA certificate:", "err", err)
+		os.Exit(1)
 	}
 	leafCert, leafPrivateKey, err := generateLeafCert(ca, caPrivateKey)
 	if err != nil {
-		log.Fatal("failed to generate leaf certificate:", err)
+		slog.Error("failed to generate leaf certificate:", "err", err)
+		os.Exit(1)
 	}
 	certPool = x509.NewCertPool()
 	certPool.AddCert(ca)

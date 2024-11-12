@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"golang.org/x/exp/rand"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
+
+	"golang.org/x/exp/rand"
 
 	"github.com/quic-go/quic-go/http3"
 	"github.com/stretchr/testify/require"
@@ -17,8 +18,9 @@ import (
 )
 
 func TestCapsuleSkipping(t *testing.T) {
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer slog.SetDefault(oldLogger)
 
 	var buf bytes.Buffer
 	require.NoError(t, http3.WriteCapsule(&buf, 1337, []byte("foo")))

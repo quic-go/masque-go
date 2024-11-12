@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -30,7 +30,8 @@ func main() {
 	}
 	urls := flag.Args()
 	if len(urls) != 1 {
-		log.Fatal("usage: client -t <template> <url>")
+		slog.Error("usage: client -t <template> <url>")
+		os.Exit(1)
 	}
 
 	cl := masque.Client{
@@ -41,7 +42,8 @@ func main() {
 	}
 	host, port, err := extractHostAndPort(urls[0])
 	if err != nil {
-		log.Fatalf("failed to parse url: %v", err)
+		slog.Error("failed to parse url", "err", err)
+		os.Exit(1)
 	}
 
 	hcl := &http.Client{
@@ -53,9 +55,11 @@ func main() {
 				}
 				pconn, _, err := cl.Dial(context.Background(), uritemplate.MustNew(proxyURITemplate), raddr)
 				if err != nil {
-					log.Fatal("dialing MASQUE failed:", err)
+					slog.Error("dialing MASQUE failed", "err", err)
+					os.Exit(1)
 				}
-				log.Printf("dialed connection: %s <-> %s", pconn.LocalAddr(), raddr)
+				slog.Info(fmt.Sprintf("dialed connection: %s <-> %s", pconn.LocalAddr(), raddr))
+
 				quicConf = quicConf.Clone()
 				quicConf.DisablePathMTUDiscovery = true
 				return quic.DialEarly(ctx, pconn, raddr, tlsConf, quicConf)
@@ -64,14 +68,16 @@ func main() {
 	}
 	rsp, err := hcl.Get(urls[0])
 	if err != nil {
-		log.Fatalf("request failed: %v", err)
+		slog.Error("request failed", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("HTTP status: %d", rsp.StatusCode)
+	slog.Info("HTTP status", "status", rsp.StatusCode)
 	data, err := io.ReadAll(rsp.Body)
 	if err != nil {
-		log.Fatalf("reading response body failed: %v", err)
+		slog.Error("reading response body failed", "err", err)
+		os.Exit(1)
 	}
-	log.Println(string(data))
+	slog.Info(string(data))
 }
 
 func extractHostAndPort(template string) (string, uint16, error) {

@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
-	"log"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -31,11 +30,13 @@ func main() {
 
 	template, err := uritemplate.New(templateStr)
 	if err != nil {
-		log.Fatalf("invalid template: %v", err)
+		slog.Error("invalid template", "err", err)
+		os.Exit(1)
 	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		log.Fatalf("failed to load certificate: %v", err)
+		slog.Error("failed to load certificate", "err", err)
+		os.Exit(1)
 	}
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -51,7 +52,8 @@ func main() {
 	// parse the template to extract the path for the HTTP handler
 	u, err := url.Parse(templateStr)
 	if err != nil {
-		log.Fatalf("failed to parse URI template: %v", err)
+		slog.Error("failed to parse URI template", "err", err)
+		os.Exit(1)
 	}
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseRequest(r, template)
@@ -67,6 +69,7 @@ func main() {
 		proxy.Proxy(w, req)
 	})
 	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("failed to run proxy: %v", err)
+		slog.Error("failed to run proxy", "err", err)
+		os.Exit(1)
 	}
 }

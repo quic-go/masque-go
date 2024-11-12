@@ -3,7 +3,7 @@ package masque
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -92,14 +92,14 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	go func() {
 		defer wg.Done()
 		if err := s.proxyConnSend(conn, str); err != nil {
-			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
+			slog.Error("proxying send side failed", "remoteAddr", conn.RemoteAddr(), "err", err)
 		}
 		str.Close()
 	}()
 	go func() {
 		defer wg.Done()
 		if err := s.proxyConnReceive(conn, str); err != nil && !s.closed.Load() {
-			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
+			slog.Error("proxying receive side failed", "remoteAddr", conn.RemoteAddr(), "err", err)
 		}
 		str.Close()
 	}()
@@ -107,7 +107,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 		defer wg.Done()
 		// discard all capsules sent on the request stream
 		if err := skipCapsules(quicvarint.NewReader(str)); err == io.EOF {
-			log.Printf("reading from request stream failed: %v", err)
+			slog.Error("reading from request stream failed", "err", err)
 		}
 		str.Close()
 		conn.Close()
