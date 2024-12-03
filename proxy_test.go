@@ -75,7 +75,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	})
 	r, err := ParseRequest(req, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
-	go p.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r)
+	go p.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	b := make([]byte, 100)
@@ -103,7 +103,7 @@ func TestProxyDialFailure(t *testing.T) {
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, p.Proxy(rec, req), "invalid port")
+	require.ErrorContains(t, p.Proxy(rec, req, nil), "invalid port")
 	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
 }
 
@@ -117,7 +117,7 @@ func TestProxyingAfterClose(t *testing.T) {
 
 	t.Run("proxying", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		require.ErrorIs(t, p.Proxy(rec, req), net.ErrClosed)
+		require.ErrorIs(t, p.Proxy(rec, req, nil), net.ErrClosed)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	})
 
@@ -125,7 +125,7 @@ func TestProxyingAfterClose(t *testing.T) {
 		rec := httptest.NewRecorder()
 		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 		require.NoError(t, err)
-		require.ErrorIs(t, p.ProxyConnectedSocket(rec, req, conn), net.ErrClosed)
+		require.ErrorIs(t, p.ProxyConnectedSocket(rec, conn, nil), net.ErrClosed)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	})
 }
