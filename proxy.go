@@ -39,7 +39,7 @@ type Proxy struct {
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
-func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
+func (s *Proxy) Proxy(w http.ResponseWriter, r *Request, tracer *Tracer) error {
 	if s.closed.Load() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return net.ErrClosed
@@ -59,14 +59,14 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 	}
 	defer conn.Close()
 
-	return s.ProxyConnectedSocket(w, r, conn)
+	return s.ProxyConnectedSocket(w, conn, tracer)
 }
 
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
 // It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, conn *net.UDPConn, tracer *Tracer) error {
 	if s.closed.Load() {
 		conn.Close()
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -91,17 +91,23 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnSend(conn, str); err != nil {
+		if err := s.proxyConnSend(conn, str, tracer); err != nil {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
+		if tracer != nil && tracer.SendDirectionClosed != nil {
+			tracer.SendDirectionClosed()
+		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil && !s.closed.Load() {
+		if err := s.proxyConnReceive(conn, str, tracer); err != nil && !s.closed.Load() {
 			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
+		if tracer != nil && tracer.ReceiveDirectionClosed != nil {
+			tracer.ReceiveDirectionClosed()
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -116,7 +122,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream, tracer *Tracer) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
@@ -130,13 +136,17 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
 			// Drop this datagram. We currently only support proxying of UDP payloads.
 			continue
 		}
-		if _, err := conn.Write(data[n:]); err != nil {
+		b := data[n:]
+		if _, err := conn.Write(b); err != nil {
 			return err
+		}
+		if tracer != nil && tracer.SentData != nil {
+			tracer.SentData(len(b))
 		}
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream, tracer *Tracer) error {
 	b := make([]byte, 1500)
 	for {
 		n, err := conn.Read(b)
@@ -148,6 +158,9 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
 		data = append(data, b[:n]...)
 		if err := str.SendDatagram(data); err != nil {
 			return err
+		}
+		if tracer != nil && tracer.ReceivedData != nil {
+			tracer.ReceivedData(n)
 		}
 	}
 }

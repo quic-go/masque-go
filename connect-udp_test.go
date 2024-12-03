@@ -74,7 +74,7 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		proxy.Proxy(w, req, nil)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -135,7 +135,7 @@ func TestProxyToHostname(t *testing.T) {
 		// In this test, we don't actually want to connect to quic-go.net
 		// Replace the target with the UDP echoer we spun up earlier.
 		req.Target = remoteServerConn.LocalAddr().String()
-		proxy.Proxy(w, req)
+		proxy.Proxy(w, req, nil)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -231,7 +231,7 @@ func TestProxyShutdown(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		proxy.Proxy(w, req, nil)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
