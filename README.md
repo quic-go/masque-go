@@ -6,7 +6,7 @@
 
 masque-go is an implementation of the CONNECT-UDP protocol [RFC 9298](https://datatracker.ietf.org/doc/html/rfc9298), based on [quic-go](https://github.com/quic-go/quic-go). It provides both a client and a proxy implementation.
 
-Detailed documentation can be found on [quic-go.net](https://quic-go.net/docs/masque).
+Detailed documentation can be found on [quic-go.net](https://quic-go.net/docs/connect-udp/).
 
 ## Release Policy
 
