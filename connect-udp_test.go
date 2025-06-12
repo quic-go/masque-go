@@ -65,16 +65,10 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Log("Upgrade failed:", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		proxy.Proxy(w, req)
+		require.NoError(t, proxy.Proxy(w, r))
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -119,23 +113,14 @@ func TestProxyToHostname(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Log("Upgrade failed:", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if req.Target != "quic-go.net:1234" {
-			t.Log("unexpected request target:", req.Target)
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
+		require.Equal(t, "h=quic-go.net&p=1234", r.URL.RawQuery, "confirm the client behaved correctly")
 		// In this test, we don't actually want to connect to quic-go.net
 		// Replace the target with the UDP echoer we spun up earlier.
-		req.Target = remoteServerConn.LocalAddr().String()
-		proxy.Proxy(w, req)
+		r.URL.RawQuery = fmt.Sprintf("h=127.0.0.1&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port)
+		proxy.Proxy(w, r)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -173,7 +158,7 @@ func TestProxyingRejected(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	go func() {
@@ -223,15 +208,9 @@ func TestProxyShutdown(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Log("Upgrade failed:", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		proxy.Proxy(w, req)
+		require.NoError(t, proxy.Proxy(w, r))
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {

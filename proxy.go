@@ -13,6 +13,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/yosida95/uritemplate/v3"
 )
 
 const (
@@ -34,6 +35,8 @@ func (e proxyEntry) Close() error {
 
 // A Proxy is an RFC 9298 CONNECT-UDP proxy.
 type Proxy struct {
+	Template *uritemplate.Template
+
 	mx       sync.Mutex
 	closed   bool
 	refCount sync.WaitGroup // counter for the Go routines spawned in Upgrade
@@ -81,7 +84,7 @@ func dnsErrorToProxyStatus(proxyStatus *httpsfv.Item, dnsError *net.DNSError) {
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
-func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
+func (s *Proxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 	s.mx.Lock()
 	if s.closed {
 		s.mx.Unlock()
@@ -105,7 +108,18 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 		return err
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", r.Target)
+	req, err := ParseRequest(r, s.Template)
+	if err != nil {
+		var perr *RequestParseError
+		if errors.As(err, &perr) {
+			w.WriteHeader(perr.HTTPStatus)
+			return nil
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		return nil
+	}
+
+	addr, err := net.ResolveUDPAddr("udp", req.Target)
 	if err != nil {
 		var dnsError *net.DNSError
 		if errors.As(err, &dnsError) {
@@ -130,7 +144,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 		w.WriteHeader(errToStatus(err))
 		return err
 	}
-	return s.ProxyConnectedSocket(w, r, conn)
+	return s.ProxyConnectedSocket(w, req, conn)
 }
 
 // ProxyConnectedSocket proxies a request on a connected UDP socket.

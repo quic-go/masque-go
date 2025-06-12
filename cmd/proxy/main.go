@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"errors"
 	"flag"
 	"log"
 	"log/slog"
@@ -47,24 +46,16 @@ func main() {
 		Logger:          slog.Default(),
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template}
 	// parse the template to extract the path for the HTTP handler
 	u, err := url.Parse(templateStr)
 	if err != nil {
 		log.Fatalf("failed to parse URI template: %v", err)
 	}
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			var perr *masque.RequestParseError
-			if errors.As(err, &perr) {
-				w.WriteHeader(perr.HTTPStatus)
-				return
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			return
+		if err := proxy.Proxy(w, r); err != nil {
+			log.Printf("failed to proxy: %v", err)
 		}
-		proxy.Proxy(w, req)
 	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("failed to run proxy: %v", err)

@@ -46,17 +46,10 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	serverPort := serverConn.LocalAddr().(*net.UDPAddr).Port
 	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", serverPort))
 
-	p := masque.Proxy{}
+	p := masque.Proxy{Template: template}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Logf("error parsing request: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		p.Proxy(w, req)
+		require.NoError(t, p.Proxy(w, r))
 	})
 	server := &http3.Server{
 		Handler:         mux,
@@ -116,13 +109,12 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 }
 
 func TestProxyBadPort(t *testing.T) {
-	p := masque.Proxy{}
+	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
+	p := masque.Proxy{Template: template}
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
-	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
-	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, p.Proxy(rec, req), "invalid port")
+	require.ErrorContains(t, p.Proxy(rec, r), "invalid port")
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	proxyStatus := rec.Header().Get("Proxy-Status")
@@ -134,13 +126,12 @@ func TestProxyBadPort(t *testing.T) {
 }
 
 func TestProxyNXDOMAIN(t *testing.T) {
-	p := masque.Proxy{}
+	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
+	p := masque.Proxy{Template: template}
 	r := newRequest("https://localhost:1234/masque?h=nxdomain.test&p=12345") // invalid port number
-	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
-	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, p.Proxy(rec, req), "no such host")
+	require.ErrorContains(t, p.Proxy(rec, r), "no such host")
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 
 	proxyStatus := rec.Header().Get("Proxy-Status")
@@ -153,7 +144,8 @@ func TestProxyNXDOMAIN(t *testing.T) {
 }
 
 func TestProxyingAfterClose(t *testing.T) {
-	p := &masque.Proxy{}
+	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
+	p := &masque.Proxy{Template: template}
 	require.NoError(t, p.Close())
 
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
@@ -162,7 +154,7 @@ func TestProxyingAfterClose(t *testing.T) {
 
 	t.Run("proxying", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		require.ErrorIs(t, p.Proxy(rec, req), net.ErrClosed)
+		require.ErrorIs(t, p.Proxy(rec, r), net.ErrClosed)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	})
 
