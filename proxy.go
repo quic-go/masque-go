@@ -1,39 +1,63 @@
 package masque
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"sync"
 
 	"github.com/dunglas/httpsfv"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/yosida95/uritemplate/v3"
 )
 
 const (
 	uriTemplateTargetHost = "target_host"
 	uriTemplateTargetPort = "target_port"
+
+	datagramCapsuleType = 0x00
+
+	maxUdpPayload = 1500
+
+	// Limits the size of downstream TCP capsules
+	maxTCPChunkSize = 32 * 1024 // 32KB, somewhat arbitrary
+
+	data08CapsuleType      = 0x2028d7f0
+	finalData08CapsuleType = 0x2028d7f1
+
+	H3_CONNECT_ERROR = 0x010f // RFC 9114
+
 )
 
 var contextIDZero = quicvarint.Append([]byte{}, 0)
 
 type proxyEntry struct {
-	str  *http3.Stream
-	conn *net.UDPConn
+	rsp http.ResponseWriter
+	req io.ReadCloser
 }
 
 func (e proxyEntry) Close() error {
-	e.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeConnectError))
-	return errors.Join(e.str.Close(), e.conn.Close())
+	if streamer, isH3 := e.rsp.(http3.HTTPStreamer); isH3 {
+		str := streamer.HTTPStream()
+		str.CancelRead(quic.StreamErrorCode(http3.ErrCodeConnectError))
+	}
+
+	return e.req.Close()
 }
 
 // A Proxy is an RFC 9298 CONNECT-UDP proxy.
 type Proxy struct {
+	Template        *uritemplate.Template
+	EnableDatagrams bool
+
 	mx       sync.Mutex
 	closed   bool
 	refCount sync.WaitGroup // counter for the Go routines spawned in Upgrade
@@ -81,7 +105,7 @@ func dnsErrorToProxyStatus(proxyStatus *httpsfv.Item, dnsError *net.DNSError) {
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
-func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
+func (s *Proxy) Proxy(w http.ResponseWriter, r *http.Request) error {
 	s.mx.Lock()
 	if s.closed {
 		s.mx.Unlock()
@@ -105,39 +129,106 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 		return err
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", r.Target)
+	req, err := ParseRequest(r, s.Template)
 	if err != nil {
-		var dnsError *net.DNSError
-		if errors.As(err, &dnsError) {
-			dnsErrorToProxyStatus(&proxyStatus, dnsError)
+		var perr *RequestParseError
+		if errors.As(err, &perr) {
+			w.WriteHeader(perr.HTTPStatus)
+			return nil
 		}
-		err = writeProxyStatus(err)
-		w.WriteHeader(errToStatus(err))
-		return err
+		w.WriteHeader(http.StatusBadRequest)
+		return nil
 	}
-	proxyStatus.Params.Add("next-hop", addr.String())
 
-	conn, err := net.DialUDP("udp", nil, addr)
+	if req.Protocol == ConnectUDP {
+		addr, err := net.ResolveUDPAddr("udp", req.Target)
+		if err != nil {
+			var dnsError *net.DNSError
+			if errors.As(err, &dnsError) {
+				dnsErrorToProxyStatus(&proxyStatus, dnsError)
+			}
+			err = writeProxyStatus(err)
+
+			w.WriteHeader(errToStatus(err))
+			return err
+		}
+
+		proxyStatus.Params.Add("next-hop", addr.String())
+		conn, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			proxyStatus.Params.Add("error", "destination_ip_unroutable")
+			err = writeProxyStatus(err)
+
+			w.WriteHeader(errToStatus(err))
+			return err
+		}
+		defer conn.Close()
+
+		if err := writeProxyStatus(nil); err != nil {
+			w.WriteHeader(errToStatus(err))
+			return err
+		}
+
+		return s.ProxyConnectedSocket(w, req, conn)
+	}
+	return fmt.Errorf("unknown protocol %q", req.Protocol)
+}
+
+func hijackIfH1(w http.ResponseWriter) (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, isH1 := w.(http.Hijacker)
+	if !isH1 {
+		return nil, nil, nil
+	}
+	return hijacker.Hijack()
+}
+
+func writeResponseWithHijacker(headers http.Header, httpConn net.Conn, buf *bufio.ReadWriter, protocol string) error {
+	statusCode := http.StatusSwitchingProtocols
+	if buf.Reader.Buffered() > 0 {
+		// CONNECT-TCP Section 4.1 says 'Clients MUST NOT use "optimistic" behavior in HTTP/1.1'.
+		statusCode = http.StatusBadRequest
+		if proxyStatusVals := headers.Values("Proxy-Status"); len(proxyStatusVals) > 0 {
+			proxyStatus, err := httpsfv.UnmarshalItem(proxyStatusVals)
+			if err != nil {
+				return fmt.Errorf("encountered invalid Proxy-Status: %w", err)
+			}
+			proxyStatus.Params.Add("error", "proxy_internal_response")
+			proxyStatus.Params.Add("detail",
+				fmt.Sprintf("client sent %d bytes of optimistic data, not allowed in HTTP/1.1", buf.Available()))
+			newProxyStatusVal, err := httpsfv.Marshal(proxyStatus)
+			if err != nil {
+				return fmt.Errorf("Couldn't serialize Proxy-Status: %w", err)
+			}
+			headers.Set("Proxy-Status", newProxyStatusVal)
+		}
+	}
+
+	rsp := http.Response{
+		StatusCode:    statusCode,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		ContentLength: -1,
+		Header:        headers,
+	}
+	if statusCode == http.StatusSwitchingProtocols {
+		rsp.Header.Set("Connection", "Upgrade")
+		rsp.Header.Set("Upgrade", protocol)
+	}
+	rspBytes, err := httputil.DumpResponse(&rsp, false)
 	if err != nil {
-		proxyStatus.Params.Add("error", "destination_ip_unroutable")
-		err = writeProxyStatus(err)
-		w.WriteHeader(errToStatus(err))
 		return err
 	}
-	defer conn.Close()
-
-	if err = writeProxyStatus(nil); err != nil {
-		w.WriteHeader(errToStatus(err))
+	if _, err := httpConn.Write(rspBytes); err != nil {
 		return err
 	}
-	return s.ProxyConnectedSocket(w, r, conn)
+	return nil
 }
 
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
 // Applications may add custom header fields such as Proxy-Status
 // to the response header, but MUST NOT call WriteHeader on the
 // http.ResponseWriter. It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *net.UDPConn) error {
 	s.mx.Lock()
 	if s.closed {
 		s.mx.Unlock()
@@ -146,59 +237,114 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 		return net.ErrClosed
 	}
 
-	str := w.(http3.HTTPStreamer).HTTPStream()
-	entry := proxyEntry{str: str, conn: conn}
+	var closer io.Closer = proxyEntry{rsp: w, req: r.Body}
 
 	if s.closers == nil {
 		s.closers = make(map[io.Closer]struct{})
 	}
-	s.closers[entry] = struct{}{}
+	s.closers[closer] = struct{}{}
 
 	s.refCount.Add(1)
 	defer s.refCount.Done()
 	s.mx.Unlock()
 
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
-	w.WriteHeader(http.StatusOK)
+	h1Conn, buf, err := hijackIfH1(w)
+	if err != nil {
+		return err
+	}
+	if h1Conn != nil {
+		defer h1Conn.Close()
 
-	var wg sync.WaitGroup
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		if err := s.proxyConnSend(conn, str); err != nil {
-			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
+		// The request body is no longer relevant due to hijack.  Use the
+		// hijacked connection instead.
+		s.mx.Lock()
+		delete(s.closers, closer)
+		closer = h1Conn
+		s.closers[closer] = struct{}{}
+		s.mx.Unlock()
+
+		if err := writeResponseWithHijacker(w.Header(), h1Conn, buf, ConnectUDP); err != nil {
+			return err
 		}
-		str.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil {
-			s.mx.Lock()
-			closed := s.closed
-			s.mx.Unlock()
-			if !closed {
-				log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
-			}
-		}
-		str.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		// discard all capsules sent on the request stream
-		if err := skipCapsules(quicvarint.NewReader(str)); err == io.EOF {
-			log.Printf("reading from request stream failed: %v", err)
-		}
-		str.Close()
-		conn.Close()
-	}()
-	wg.Wait()
+
+		forwardUDP(h1Conn, h1Conn, conn, false)
+	} else {
+		w.WriteHeader(http.StatusOK)
+		forwardUDP(w, r.Body, conn, s.EnableDatagrams)
+	}
+
 	s.mx.Lock()
-	delete(s.closers, entry)
+	delete(s.closers, closer)
 	s.mx.Unlock()
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
+/*
+ * Forwarding function conventions:
+ * `*To*` functions block until that direction of forwarding is complete.
+ * They return `nil` (not EOF) on clean shutdown.
+ * `w` and `r` represent the HTTP side.
+ * `conn` represents the raw UDP or TCP side.
+ */
+
+type H3Streamer interface {
+	http3.HTTPStreamer
+	Connection() *http3.Conn
+}
+
+func forwardUDP(w io.Writer, r io.ReadCloser, conn net.Conn, enableDatagrams bool) {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	useDatagrams := false
+	str := getDatagramSendReceiver(w)
+	if str != nil {
+		defer str.Close()
+		if enableDatagrams {
+			h3Connection := getH3SettingsMonitor(w)
+			<-h3Connection.ReceivedSettings()
+			remoteSettings := h3Connection.Settings()
+			useDatagrams = remoteSettings.EnableDatagrams
+		}
+	}
+	if useDatagrams {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := datagramsToUDP(conn, str); err != nil {
+				log.Printf("proxying datagrams to %s failed: %v", conn.RemoteAddr(), err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := udpToDatagrams(conn, str); err != nil {
+				log.Printf("proxying %s to datagrams stopped: %v", conn.RemoteAddr(), err)
+			}
+			// Backup shutdown: `conn` somehow became closed or a datagram write failed.
+			r.Close()
+		}()
+	} else {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := udpToCapsules(conn, w); err != nil {
+				log.Printf("writing to HTTP stream failed: %v", err)
+			}
+			// Backup shutdown: `conn` somehow became closed or an HTTP write failed.
+			r.Close()
+		}()
+	}
+
+	// Wait for the client to close the upstream side.
+	if err := capsulesToUDP(conn, r); err != nil {
+		log.Printf("reading from HTTP stream failed: %v", err)
+	}
+	// Normal shutdown: client closes the request stream, so we
+	// close the UDP connection.
+	conn.Close()
+}
+
+func datagramsToUDP(conn io.Writer, str DatagramReceiver) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
@@ -212,23 +358,92 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 			// Drop this datagram. We currently only support proxying of UDP payloads.
 			continue
 		}
+		if len(data[n:]) > maxUdpPayload {
+			log.Printf("dropping datagram larger than MTU (%d > %d)", len(data[n:]), maxUdpPayload)
+		}
 		if _, err := conn.Write(data[n:]); err != nil {
 			return err
 		}
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
-	b := make([]byte, 1500)
+// Read all the data from r until EOF.  If this doesn't fit in b,
+// ErrShortBuffer is returned.
+func readAll(r io.Reader, b []byte) (int, error) {
+	blen := 0
+	for blen < len(b) {
+		n, err := r.Read(b[blen:])
+		blen += n
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return blen, nil
+			}
+			return blen, err
+		}
+	}
+	return blen, io.ErrShortBuffer
+}
+
+func capsulesToUDP(conn io.Writer, body io.Reader) error {
+	qr := quicvarint.NewReader(body)
+	b := make([]byte, maxUdpPayload)
 	for {
-		n, err := conn.Read(b)
+		capsuleType, content, err := http3.ParseCapsule(qr)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if capsuleType != datagramCapsuleType {
+			log.Printf("skipping unknown capsule type %d", capsuleType)
+			continue
+		}
+		n, err := readAll(content, b)
+		if err == io.ErrShortBuffer {
+			// Drain remainder of oversize capsule
+			n, err := io.Copy(io.Discard, content)
+			if err != nil {
+				return err
+			}
+			log.Printf("skipping datagram capsule larger than MTU (%d > %d)", n+maxUdpPayload, maxUdpPayload)
+		}
 		if err != nil {
 			return err
 		}
-		data := make([]byte, 0, len(contextIDZero)+n)
-		data = append(data, contextIDZero...)
-		data = append(data, b[:n]...)
+		if _, err := conn.Write(b[:n]); err != nil {
+			return err
+		}
+	}
+}
+
+func udpToDatagrams(conn io.Reader, str DatagramSender) error {
+	b := make([]byte, len(contextIDZero)+maxUdpPayload)
+	copy(b, contextIDZero)
+	for {
+		n, err := conn.Read(b[len(contextIDZero):])
+		if err != nil {
+			return err
+		}
+		data := b[:len(contextIDZero)+n]
 		if err := str.SendDatagram(data); err != nil {
+			return err
+		}
+	}
+}
+
+func udpToCapsules(conn io.Reader, w io.Writer) error {
+	qw := quicvarint.NewWriter(w)
+	b := make([]byte, maxUdpPayload)
+	for {
+		n, err := conn.Read(b)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if err := http3.WriteCapsule(qw, datagramCapsuleType, b[:n]); err != nil {
 			return err
 		}
 	}

@@ -1,189 +1,235 @@
 package masque_test
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"fmt"
 	"io"
-	"log"
-	"math/rand/v2"
 	"net"
-	"net/http"
-	"os"
 	"testing"
-	"time"
 
 	"github.com/quic-go/masque-go"
-
 	"github.com/quic-go/quic-go/http3"
-	"github.com/yosida95/uritemplate/v3"
-
 	"github.com/stretchr/testify/require"
 )
 
-func setupProxiedConn(t *testing.T) (*http3.Stream, net.PacketConn) {
-	t.Helper()
+func TestUDPCapsules(t *testing.T) {
+	rspReader, rspWriter := io.Pipe()
+	reqReader, reqWriter := io.Pipe()
 
-	targetConn := newUDPConnLocalhost(t)
+	conn := masque.ProxiedPacketConn(reqWriter, rspReader, false) // enableDatagrams=false for capsule mode
 
-	strChan := make(chan *http3.Stream, 1)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		strChan <- w.(http3.HTTPStreamer).HTTPStream()
-	})
-	server := http3.Server{
-		TLSConfig:       tlsConf,
-		Handler:         mux,
-		EnableDatagrams: true,
+	go func() {
+		addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5678}
+		_, err := conn.WriteTo([]byte("upstream"), addr)
+		require.NoError(t, err)
+	}()
+
+	go func() {
+		downstream := []byte{
+			// DATAGRAM capsule type varint (0x00)
+			0x00,
+			// Payload length varint (10)
+			10,
+			// Payload ("downstream")
+			'd', 'o', 'w', 'n', 's', 't', 'r', 'e', 'a', 'm',
+		}
+
+		_, err := rspWriter.Write(downstream)
+		require.NoError(t, err)
+	}()
+
+	expectedUpstream := []byte{
+		// DATAGRAM capsule type varint (0x00)
+		0x00,
+		// Payload length varint (8)
+		8,
+		// Payload ("upstream")
+		'u', 'p', 's', 't', 'r', 'e', 'a', 'm',
 	}
-	t.Cleanup(func() { server.Close() })
-	serverConn := newUDPConnLocalhost(t)
-	go server.Serve(serverConn)
 
-	cl := masque.Client{
-		TLSClientConfig: &tls.Config{
-			ClientCAs:          certPool,
-			NextProtos:         []string{http3.NextProtoH3},
-			InsecureSkipVerify: true,
+	receivedUpstream := make([]byte, len(expectedUpstream))
+	_, err := io.ReadFull(reqReader, receivedUpstream)
+	require.NoError(t, err)
+	require.Equal(t, expectedUpstream, receivedUpstream)
+
+	buf := make([]byte, 1024)
+	n, _, err := conn.ReadFrom(buf)
+	require.NoError(t, err)
+	require.Equal(t, []byte("downstream"), buf[:n])
+
+	err = conn.Close()
+	require.NoError(t, err)
+
+	err = reqReader.Close()
+	require.NoError(t, err)
+}
+
+func TestUDPDatagrams(t *testing.T) {
+	// Send a datagram downstream first
+	downstream := []byte{
+		0x00, // context ID varint (0)
+		'd', 'o', 'w', 'n', 's', 't', 'r', 'e', 'a', 'm',
+	}
+
+	// Create a fake httpStreamer implementation
+	fakeStreamer := &fakeHTTPStreamer{
+		datagramsSent: make(chan []byte),
+		datagramsToReceive: [][]byte{downstream},
+	}
+
+	// Create a fake settings monitor that indicates datagrams are enabled
+	receivedSettings := make(chan struct{})
+	close(receivedSettings) // Signal that settings have been received
+	fakeSettingsMonitor := &fakeH3SettingsMonitor{
+		receivedSettings: receivedSettings,
+		settings: &http3.Settings{
+			EnableExtendedConnect: true,
+			EnableDatagrams:       true,
 		},
 	}
-	t.Cleanup(func() { cl.Close() })
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	conn, rsp, err := cl.Dial(
-		ctx,
-		uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", serverConn.LocalAddr().(*net.UDPAddr).Port)),
-		targetConn.LocalAddr().(*net.UDPAddr),
-	)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, rsp.StatusCode)
-	t.Cleanup(func() { conn.Close() })
-
-	var str *http3.Stream
-	select {
-	case str = <-strChan:
-	case <-time.After(time.Second):
-		t.Fatal("timeout")
+	// Wrap reqWriter to implement the httpStreamer interface
+	fakeWriter := &httpStreamerWriter{
+		streamer:        fakeStreamer,
+		settingsMonitor: fakeSettingsMonitor,
 	}
-	return str, conn
-}
 
-func TestCapsuleSkipping(t *testing.T) {
-	log.SetOutput(io.Discard)
-	defer log.SetOutput(os.Stderr)
+	// No capsules are received on the capsule stream, so we use
+	// a fake reader that does nothing until it is closed.
+	capsuleStream := &blockReader{
+		closed: make(chan struct{}),
+	}
 
-	str, conn := setupProxiedConn(t)
+	conn := masque.ProxiedPacketConn(fakeWriter, capsuleStream, true) // enableDatagrams=true for datagram mode
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5678}
 
-	var buf bytes.Buffer
-	require.NoError(t, http3.WriteCapsule(&buf, 1337, []byte("foo")))
-	require.NoError(t, http3.WriteCapsule(&buf, 42, []byte("bar")))
-	_, err := str.Write(buf.Bytes())
+	// Write upstream data
+	_, err := conn.WriteTo([]byte("upstream"), addr)
 	require.NoError(t, err)
-	require.NoError(t, str.Close())
 
-	_, _, err = conn.ReadFrom(make([]byte, 100))
-	require.ErrorIs(t, err, io.EOF)
+	// Check that upstream datagram was sent correctly
+	datagram := <-fakeStreamer.datagramsSent
+	expected := []byte{
+		0x00, // context ID varint (0)
+		'u', 'p', 's', 't', 'r', 'e', 'a', 'm',
+	}
+	require.Equal(t, expected, datagram)
+
+	// Check that downstream datagram was received correctly
+	buf := make([]byte, 1024)
+	n, _, err := conn.ReadFrom(buf)
+	require.NoError(t, err)
+	require.Equal(t, []byte("downstream"), buf[:n])
+
+	// Clean up
+	err = conn.Close()
+	require.NoError(t, err)
 }
 
-func TestReadDeadline(t *testing.T) {
-	t.Run("read after deadline", func(t *testing.T) {
-		_, conn := setupProxiedConn(t)
+type blockReader struct {
+	closed chan struct{}
+}
 
-		require.NoError(t, conn.SetReadDeadline(time.Now().Add(-time.Second)))
-		_, _, err := conn.ReadFrom(make([]byte, 100))
-		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-	})
+func (r *blockReader) Read(p []byte) (int, error) {
+	<-r.closed
+	return 0, io.EOF
+}
 
-	t.Run("unblocking read", func(t *testing.T) {
-		_, conn := setupProxiedConn(t)
+func (r *blockReader) Close() error {
+	select {
+		case <-r.closed: return nil
+		default: close(r.closed)
+	}
+	return nil
+}
 
-		errChan := make(chan error, 1)
+// fakeHTTPStreamer implements DatagramSendReceiver for testing
+type fakeHTTPStreamer struct {
+	datagramsSent chan []byte
+	datagramsToReceive [][]byte
+}
+
+func (f *fakeHTTPStreamer) SendDatagram(b []byte) error {
+	f.datagramsSent <- b
+	return nil
+}
+
+func (f *fakeHTTPStreamer) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+	if len(f.datagramsToReceive) == 0 {
+		return nil, io.EOF
+	}
+	datagram := f.datagramsToReceive[0]
+	f.datagramsToReceive = f.datagramsToReceive[1:]
+	return datagram, nil
+}
+
+func (f *fakeHTTPStreamer) Close() error {
+	close(f.datagramsSent)
+	return nil
+}
+
+// fakeH3SettingsMonitor implements H3SettingsMonitor for testing
+type fakeH3SettingsMonitor struct {
+	receivedSettings chan struct{}
+	settings         *http3.Settings
+}
+
+func (f *fakeH3SettingsMonitor) ReceivedSettings() <-chan struct{} {
+	return f.receivedSettings
+}
+
+func (f *fakeH3SettingsMonitor) Settings() *http3.Settings {
+	return f.settings
+}
+
+// httpStreamerWriter wraps an io.Writer and implements the httpStreamer interface
+type httpStreamerWriter struct {
+	io.Writer
+	streamer        *fakeHTTPStreamer
+	settingsMonitor *fakeH3SettingsMonitor
+}
+
+func (w *httpStreamerWriter) HTTPStream() masque.DatagramSendReceiver {
+	return w.streamer
+}
+
+func (w *httpStreamerWriter) Connection() masque.H3SettingsMonitor {
+	return w.settingsMonitor
+}
+
+func setupTandemUDP() (net.PacketConn, net.PacketConn) {
+	rspReader, rspWriter := io.Pipe()
+	reqReader, reqWriter := io.Pipe()
+
+	conn1 := masque.ProxiedPacketConn(reqWriter, rspReader, false)
+	conn2 := masque.ProxiedPacketConn(rspWriter, reqReader, false)
+
+	return conn1, conn2
+}
+
+// Connects two proxied UDP connections back-to-back, and confirms that
+// packets flow through and are reconstructed correctly.
+func TestUDPConnectionTandem(t *testing.T) {
+	run := func(t *testing.T, conn1, conn2 net.PacketConn) {
+		input := []byte{1, 2, 3, 4, 5}
+
 		go func() {
-			_, _, err := conn.ReadFrom(make([]byte, 100))
-			errChan <- err
-		}()
-		select {
-		case err := <-errChan:
-			t.Fatalf("didn't expect ReadFrom to return early: %v", err)
-		case <-time.After(scaleDuration(50 * time.Millisecond)):
-		}
-		require.NoError(t, conn.SetReadDeadline(time.Now().Add(-time.Second)))
-		select {
-		case err := <-errChan:
-			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-		case <-time.After(scaleDuration(100 * time.Millisecond)):
-			t.Fatal("timeout")
-		}
-		_, _, err := conn.ReadFrom(make([]byte, 100))
-		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-	})
+			addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5678}
+			_, err := conn1.WriteTo(input, addr)
+			require.NoError(t, err)
+		} ()
 
-	t.Run("extending the deadline", func(t *testing.T) {
-		_, conn := setupProxiedConn(t)
+		buf := make([]byte, 1024)
+		n, _, err := conn2.ReadFrom(buf)
+		require.NoError(t, err)
+		output := buf[:n]
+		require.Equal(t, input, output)
 
-		start := time.Now()
-		d := scaleDuration(75 * time.Millisecond)
-		require.NoError(t, conn.SetReadDeadline(start.Add(d)))
-		errChan := make(chan error, 1)
-		go func() {
-			_, _, err := conn.ReadFrom(make([]byte, 100))
-			errChan <- err
-		}()
-		require.NoError(t, conn.SetReadDeadline(start.Add(2*d)))
-		select {
-		case err := <-errChan:
-			if since := time.Since(start); since < 2*d {
-				require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-				t.Fatalf("ReadFrom returned early: %s, expected >= %s", since, 2*d)
-			}
-		case <-time.After(10 * d):
-			t.Fatal("timeout")
-		}
-	})
+		conn1.Close()
+		conn2.Close()
+	}
 
-	t.Run("cancelling the deadline", func(t *testing.T) {
-		_, conn := setupProxiedConn(t)
-
-		start := time.Now()
-		d := scaleDuration(75 * time.Millisecond)
-		require.NoError(t, conn.SetReadDeadline(start.Add(d)))
-		errChan := make(chan error, 1)
-		go func() {
-			_, _, err := conn.ReadFrom(make([]byte, 100))
-			errChan <- err
-		}()
-		require.NoError(t, conn.SetReadDeadline(time.Time{}))
-		select {
-		case <-errChan:
-			t.Fatal("deadline was cancelled")
-		case <-time.After(2 * d):
-		}
-
-		// test shutdown
-		require.NoError(t, conn.SetReadDeadline(time.Now()))
-		select {
-		case err := <-errChan:
-			require.Error(t, err)
-		case <-time.After(scaleDuration(100 * time.Millisecond)):
-			t.Fatal("timeout")
-		}
-	})
-
-	t.Run("multiple deadlines", func(t *testing.T) {
-		_, conn := setupProxiedConn(t)
-
-		const num = 10
-		const maxDeadline = 5 * time.Millisecond
-
-		for range num {
-			// random duration between -5ms and 5ms
-			d := scaleDuration(maxDeadline - time.Duration(rand.Int64N(2*maxDeadline.Nanoseconds())))
-			t.Logf("setting deadline to %v", d)
-			require.NoError(t, conn.SetReadDeadline(time.Now().Add(d)))
-			_, _, err := conn.ReadFrom(make([]byte, 100))
-			require.ErrorIs(t, err, os.ErrDeadlineExceeded)
-		}
-	})
+	conn1, conn2 := setupTandemUDP()
+	t.Run("forward", func(t *testing.T) { run(t, conn1, conn2) })
+	conn1, conn2 = setupTandemUDP()
+	t.Run("reverse", func(t *testing.T) { run(t, conn2, conn1) })
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/tls"
-	"errors"
 	"flag"
 	"log"
 	"log/slog"
@@ -24,7 +23,7 @@ func main() {
 	flag.StringVar(&certFile, "c", "", "cert file")
 	flag.Parse()
 
-	if templateStr == "" || bind == "" || keyFile == "" || certFile == "" {
+	if templateStr == "" || bind == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -33,40 +32,39 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid template: %v", err)
 	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		log.Fatalf("failed to load certificate: %v", err)
-	}
-	tlsConf := http3.ConfigureTLSConfig(&tls.Config{
-		Certificates: []tls.Certificate{cert},
-	})
-	server := http3.Server{
-		Addr:            bind,
-		TLSConfig:       tlsConf,
-		EnableDatagrams: true,
-		Logger:          slog.Default(),
-	}
-	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template, EnableDatagrams: true}
 	// parse the template to extract the path for the HTTP handler
 	u, err := url.Parse(templateStr)
 	if err != nil {
 		log.Fatalf("failed to parse URI template: %v", err)
 	}
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			var perr *masque.RequestParseError
-			if errors.As(err, &perr) {
-				w.WriteHeader(perr.HTTPStatus)
-				return
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			return
+		if err := proxy.Proxy(w, r); err != nil {
+			log.Printf("failed to proxy: %v", err)
 		}
-		proxy.Proxy(w, req)
 	})
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("failed to run proxy: %v", err)
+
+	if certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			log.Fatalf("failed to load certificate: %v", err)
+		}
+		go func() {
+			h3tlsConf := http3.ConfigureTLSConfig(&tls.Config{
+			Certificates: []tls.Certificate{cert},
+			})
+			h3server := http3.Server{
+				Addr:            bind,
+				TLSConfig:       h3tlsConf,
+				EnableDatagrams: true,
+				Logger:          slog.Default(),
+			}
+			if err := h3server.ListenAndServe(); err != nil {
+				log.Fatalf("failed to run proxy in h3: %v", err)
+			}
+			h3server.Close()
+		}()
+	} else {
+		log.Println("no certificate provided")
 	}
 }

@@ -2,6 +2,7 @@ package masque
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -13,7 +14,8 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
-const requestProtocol = "connect-udp"
+const ConnectUDP = "connect-udp"
+const ConnectTCP = "connect-tcp-08"
 
 var capsuleProtocolHeaderValue string
 
@@ -29,8 +31,10 @@ func init() {
 // Target is the target server that the client requests to connect to.
 // It can either be DNS name:port or an IP:port.
 type Request struct {
-	Target string
+	Protocol string // "connect-udp" or "connect-tcp"
 	Host   string
+	Target string
+	Body   io.ReadCloser
 }
 
 // RequestParseError is returned from ParseRequest if parsing the CONNECT-UDP request fails.
@@ -43,6 +47,20 @@ type RequestParseError struct {
 func (e *RequestParseError) Error() string { return e.Err.Error() }
 func (e *RequestParseError) Unwrap() error { return e.Err }
 
+func getURL(r *http.Request) url.URL {
+	u := *r.URL
+	if u.Host == "" {
+		u.Host = r.Host
+	}
+	if u.Scheme == "" {
+		u.Scheme = "https"
+		if r.TLS == nil {
+			u.Scheme = "http"
+		}
+	}
+	return u
+}
+
 // ParseRequest parses a CONNECT-UDP request.
 // The template is the URI template that clients will use to configure this UDP proxy.
 func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, error) {
@@ -54,16 +72,40 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 		}
 	}
 
-	if r.Method != http.MethodConnect {
-		return nil, &RequestParseError{
-			HTTPStatus: http.StatusMethodNotAllowed,
-			Err:        fmt.Errorf("expected CONNECT request, got %s", r.Method),
-		}
-	}
-	if r.Proto != requestProtocol {
+	var protocol string
+	if r.ProtoMajor == 2 {
 		return nil, &RequestParseError{
 			HTTPStatus: http.StatusNotImplemented,
-			Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
+			Err:        fmt.Errorf("HTTP/2 is not supported"),
+		}
+	} else if r.ProtoMajor == 1 {
+		if r.Method != http.MethodGet {
+			return nil, &RequestParseError{
+				HTTPStatus: http.StatusMethodNotAllowed,
+				Err:        fmt.Errorf("expected GET request in HTTP/1.1, got %s", r.Method),
+			}
+		}
+
+		protocol = r.Header.Get("upgrade")
+	} else if r.ProtoMajor == 3 {
+		if r.Method != http.MethodConnect {
+			return nil, &RequestParseError{
+				HTTPStatus: http.StatusMethodNotAllowed,
+				Err:        fmt.Errorf("expected CONNECT request, got %s", r.Method),
+			}
+		}
+
+		protocol = r.Proto
+	} else {
+		return nil, &RequestParseError{
+			HTTPStatus: http.StatusNotImplemented,
+			Err:        fmt.Errorf("unexpected HTTP version: %d", r.ProtoMajor),
+		}
+	}
+	if protocol != ConnectUDP && protocol != ConnectTCP {
+		return nil, &RequestParseError{
+			HTTPStatus: http.StatusNotImplemented,
+			Err:        fmt.Errorf("unexpected protocol: %s", protocol),
 		}
 	}
 	if r.Host != u.Host {
@@ -96,7 +138,8 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 		}
 	}
 
-	match := template.Match(r.URL.String())
+	requestURL := getURL(r)
+	match := template.Match(requestURL.String())
 	targetHost := unescape(match.Get(uriTemplateTargetHost).String())
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
 	if targetHost == "" || targetPortStr == "" {
@@ -117,8 +160,10 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 		}
 	}
 	return &Request{
-		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
+		Protocol: protocol,
 		Host:   r.Host,
+		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
+		Body: r.Body,
 	}, nil
 }
 

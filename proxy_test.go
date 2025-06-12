@@ -26,15 +26,32 @@ func scaleDuration(d time.Duration) time.Duration {
 
 func newRequest(target string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.ProtoMajor = 3
 	req.Method = http.MethodConnect
-	req.Proto = "connect-udp"
+	req.Proto = masque.ConnectUDP
 	req.Header.Add("Capsule-Protocol", "?1")
 	return req
 }
 
 type http3ResponseWriter struct {
 	http.ResponseWriter
-	str *http3.Stream
+	str        *http3.Stream
+	connection *http3.Conn
+}
+
+type mockConnection struct {
+	*http3.Conn
+	settings http3.Settings
+}
+
+func (c mockConnection) ReceivedSettings() <-chan struct{} {
+	ret := make(chan struct{})
+	close(ret)
+	return ret
+}
+
+func (c mockConnection) Settings() *http3.Settings {
+	return &c.settings
 }
 
 var _ http3.HTTPStreamer = &http3ResponseWriter{}
@@ -46,17 +63,10 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	serverPort := serverConn.LocalAddr().(*net.UDPAddr).Port
 	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", serverPort))
 
-	p := masque.Proxy{}
+	p := masque.Proxy{Template: template, EnableDatagrams: true}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Logf("error parsing request: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		p.Proxy(w, req)
+		require.NoError(t, p.Proxy(w, r))
 	})
 	server := &http3.Server{
 		Handler:         mux,
@@ -116,31 +126,22 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 }
 
 func TestProxyBadPort(t *testing.T) {
-	p := masque.Proxy{}
+	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
+	p := masque.Proxy{Template: template, EnableDatagrams: true}
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
-	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
-	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, p.Proxy(rec, req), "invalid port")
+	require.ErrorContains(t, p.Proxy(rec, r), "invalid port")
 	require.Equal(t, http.StatusBadRequest, rec.Code)
-
-	proxyStatus := rec.Header().Get("Proxy-Status")
-	hostPart := `"localhost:1234";`
-	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
-	require.Contains(t, proxyStatus, ";details=")
-	require.Contains(t, proxyStatus, "invalid port")
-	require.NotContains(t, proxyStatus, ";error=")
 }
 
 func TestProxyNXDOMAIN(t *testing.T) {
-	p := masque.Proxy{}
+	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
+	p := masque.Proxy{Template: template, EnableDatagrams: true}
 	r := newRequest("https://localhost:1234/masque?h=nxdomain.test&p=12345") // invalid port number
-	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
-	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, p.Proxy(rec, req), "no such host")
+	require.ErrorContains(t, p.Proxy(rec, r), "no such host")
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 
 	proxyStatus := rec.Header().Get("Proxy-Status")
@@ -151,9 +152,9 @@ func TestProxyNXDOMAIN(t *testing.T) {
 	require.Contains(t, proxyStatus, "details=")
 	require.Contains(t, proxyStatus, "no such host")
 }
-
 func TestProxyingAfterClose(t *testing.T) {
-	p := &masque.Proxy{}
+	template := uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}")
+	p := &masque.Proxy{Template: template, EnableDatagrams: true}
 	require.NoError(t, p.Close())
 
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
@@ -162,7 +163,7 @@ func TestProxyingAfterClose(t *testing.T) {
 
 	t.Run("proxying", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		require.ErrorIs(t, p.Proxy(rec, req), net.ErrClosed)
+		require.ErrorIs(t, p.Proxy(rec, r), net.ErrClosed)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	})
 

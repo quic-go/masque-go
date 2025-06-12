@@ -22,21 +22,32 @@ import (
 
 func main() {
 	var proxyURITemplate string
-	flag.StringVar(&proxyURITemplate, "t", "", "URI template")
+	flag.StringVar(&proxyURITemplate, "t", "", "URI template.")
+	var useDatagrams bool
+	flag.BoolVar(&useDatagrams, "datagrams", true, "Use QUIC datagrams to reach the proxy.")
 	flag.Parse()
 	if proxyURITemplate == "" {
 		flag.Usage()
 		os.Exit(1)
 	}
+
+	parsedTemplate, err := uritemplate.New(proxyURITemplate)
+	if err != nil {
+		log.Fatalf("failed to parse template: %v", err)
+	}
+
 	urls := flag.Args()
 	if len(urls) != 1 {
-		log.Fatal("usage: client -t <template> <url>")
+		log.Fatalf("Must specify exactly one destination URL (not %d)", len(urls))
 	}
 
 	cl := masque.Client{
 		QUICConfig: &quic.Config{
-			EnableDatagrams:   true,
+			EnableDatagrams:   useDatagrams,
 			InitialPacketSize: 1350,
+		},
+		TLSClientConfig: &tls.Config{
+			NextProtos:         []string{http3.NextProtoH3},
 		},
 	}
 	host, port, err := extractHostAndPort(urls[0])
@@ -51,7 +62,7 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				pconn, _, err := cl.Dial(context.Background(), uritemplate.MustNew(proxyURITemplate), raddr)
+				pconn, _, err := cl.Dial(ctx, parsedTemplate, raddr)
 				if err != nil {
 					log.Fatal("dialing MASQUE failed:", err)
 				}
