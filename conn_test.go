@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"golang.org/x/exp/rand"
 	"io"
 	"log"
+	"math/rand/v2"
 	"os"
 	"testing"
 	"time"
@@ -148,9 +148,9 @@ func TestReadDeadline(t *testing.T) {
 			return nil, ctx.Err()
 		}).MinTimes(num)
 
-		for i := 0; i < num; i++ {
+		for range num {
 			// random duration between -5ms and 5ms
-			d := scaleDuration(maxDeadline - time.Duration(rand.Intn(int(2*maxDeadline))))
+			d := scaleDuration(maxDeadline - time.Duration(rand.Int64N(2*maxDeadline.Nanoseconds())))
 			t.Logf("setting deadline to %v", d)
 			require.NoError(t, conn.SetReadDeadline(time.Now().Add(d)))
 			_, _, err := conn.ReadFrom(make([]byte, 100))
