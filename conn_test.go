@@ -1,52 +1,95 @@
-package masque
+package masque_test
 
 import (
 	"bytes"
 	"context"
-	"errors"
+	"crypto/tls"
+	"fmt"
 	"io"
 	"log"
 	"math/rand/v2"
+	"net"
+	"net/http"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/quic-go/masque-go"
+
 	"github.com/quic-go/quic-go/http3"
+	"github.com/yosida95/uritemplate/v3"
+
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
+
+func setupProxiedConn(t *testing.T) (http3.Stream, net.PacketConn) {
+	t.Helper()
+
+	targetConn := newUDPConnLocalhost(t)
+
+	strChan := make(chan http3.Stream, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		strChan <- w.(http3.HTTPStreamer).HTTPStream()
+	})
+	server := http3.Server{
+		TLSConfig:       tlsConf,
+		Handler:         mux,
+		EnableDatagrams: true,
+	}
+	t.Cleanup(func() { server.Close() })
+	serverConn := newUDPConnLocalhost(t)
+	go server.Serve(serverConn)
+
+	cl := masque.Client{
+		TLSClientConfig: &tls.Config{
+			ClientCAs:          certPool,
+			NextProtos:         []string{http3.NextProtoH3},
+			InsecureSkipVerify: true,
+		},
+	}
+	t.Cleanup(func() { cl.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, rsp, err := cl.Dial(
+		ctx,
+		uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", serverConn.LocalAddr().(*net.UDPAddr).Port)),
+		targetConn.LocalAddr().(*net.UDPAddr),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	t.Cleanup(func() { conn.Close() })
+
+	var str http3.Stream
+	select {
+	case str = <-strChan:
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+	return str, conn
+}
 
 func TestCapsuleSkipping(t *testing.T) {
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(os.Stderr)
 
+	str, conn := setupProxiedConn(t)
+
 	var buf bytes.Buffer
 	require.NoError(t, http3.WriteCapsule(&buf, 1337, []byte("foo")))
 	require.NoError(t, http3.WriteCapsule(&buf, 42, []byte("bar")))
-	require.ErrorIs(t, skipCapsules(&buf), io.EOF)
+	_, err := str.Write(buf.Bytes())
+	require.NoError(t, err)
+	require.NoError(t, str.Close())
+
+	_, _, err = conn.ReadFrom(make([]byte, 100))
+	require.ErrorIs(t, err, io.EOF)
 }
 
 func TestReadDeadline(t *testing.T) {
-	setupStreamAndConn := func() (*MockStream, *proxiedConn) {
-		str := NewMockStream(gomock.NewController(t))
-		done := make(chan struct{})
-		t.Cleanup(func() {
-			str.EXPECT().Close().MaxTimes(1)
-			close(done)
-		})
-		str.EXPECT().Read(gomock.Any()).DoAndReturn(func([]byte) (int, error) {
-			<-done
-			return 0, errors.New("test done")
-		}).MaxTimes(1)
-		return str, newProxiedConn(str, nil)
-	}
-
 	t.Run("read after deadline", func(t *testing.T) {
-		str, conn := setupStreamAndConn()
-		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		})
+		_, conn := setupProxiedConn(t)
 
 		require.NoError(t, conn.SetReadDeadline(time.Now().Add(-time.Second)))
 		_, _, err := conn.ReadFrom(make([]byte, 100))
@@ -54,11 +97,8 @@ func TestReadDeadline(t *testing.T) {
 	})
 
 	t.Run("unblocking read", func(t *testing.T) {
-		str, conn := setupStreamAndConn()
-		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}).Times(2)
+		_, conn := setupProxiedConn(t)
+
 		errChan := make(chan error, 1)
 		go func() {
 			_, _, err := conn.ReadFrom(make([]byte, 100))
@@ -81,11 +121,7 @@ func TestReadDeadline(t *testing.T) {
 	})
 
 	t.Run("extending the deadline", func(t *testing.T) {
-		str, conn := setupStreamAndConn()
-		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}).MaxTimes(2) // might be called a 2nd time depending on when the cancellation Go routine does its job
+		_, conn := setupProxiedConn(t)
 
 		start := time.Now()
 		d := scaleDuration(75 * time.Millisecond)
@@ -108,11 +144,7 @@ func TestReadDeadline(t *testing.T) {
 	})
 
 	t.Run("cancelling the deadline", func(t *testing.T) {
-		str, conn := setupStreamAndConn()
-		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		})
+		_, conn := setupProxiedConn(t)
 
 		start := time.Now()
 		d := scaleDuration(75 * time.Millisecond)
@@ -140,13 +172,10 @@ func TestReadDeadline(t *testing.T) {
 	})
 
 	t.Run("multiple deadlines", func(t *testing.T) {
-		str, conn := setupStreamAndConn()
+		_, conn := setupProxiedConn(t)
+
 		const num = 10
 		const maxDeadline = 5 * time.Millisecond
-		str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}).MinTimes(num)
 
 		for range num {
 			// random duration between -5ms and 5ms
