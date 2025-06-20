@@ -34,12 +34,12 @@ func newRequest(target string) *http.Request {
 
 type http3ResponseWriter struct {
 	http.ResponseWriter
-	str http3.Stream
+	str *http3.Stream
 }
 
 var _ http3.HTTPStreamer = &http3ResponseWriter{}
 
-func (s *http3ResponseWriter) HTTPStream() http3.Stream { return s.str }
+func (s *http3ResponseWriter) HTTPStream() *http3.Stream { return s.str }
 
 func TestProxyCloseProxiedConn(t *testing.T) {
 	clientConn, serverConn := newConnPair(t)

@@ -22,7 +22,7 @@ const (
 var contextIDZero = quicvarint.Append([]byte{}, 0)
 
 type proxyEntry struct {
-	str  http3.Stream
+	str  *http3.Stream
 	conn *net.UDPConn
 }
 
@@ -116,7 +116,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
@@ -136,7 +136,7 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream) error {
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream) error {
+func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 	b := make([]byte, 1500)
 	for {
 		n, err := conn.Read(b)
