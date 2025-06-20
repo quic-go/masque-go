@@ -24,8 +24,20 @@ func (m masqueAddr) String() string  { return m.Addr.String() }
 
 var _ net.Addr = &masqueAddr{}
 
+type http3Stream interface {
+	io.ReadWriteCloser
+	ReceiveDatagram(context.Context) ([]byte, error)
+	SendDatagram([]byte) error
+	CancelRead(quic.StreamErrorCode)
+}
+
+var (
+	_ http3Stream = &http3.Stream{}
+	_ http3Stream = &http3.RequestStream{}
+)
+
 type proxiedConn struct {
-	str        http3.Stream
+	str        http3Stream
 	localAddr  net.Addr
 	remoteAddr net.Addr
 
@@ -41,7 +53,7 @@ type proxiedConn struct {
 
 var _ net.PacketConn = &proxiedConn{}
 
-func newProxiedConn(str http3.Stream, local net.Addr) *proxiedConn {
+func newProxiedConn(str http3Stream, local net.Addr) *proxiedConn {
 	c := &proxiedConn{
 		str:       str,
 		localAddr: local,

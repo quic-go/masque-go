@@ -82,7 +82,7 @@ func newUDPConnLocalhost(t testing.TB) *net.UDPConn {
 	return conn
 }
 
-func newConnPair(t *testing.T) (client, server quic.EarlyConnection) {
+func newConnPair(t *testing.T) (client, server *quic.Conn) {
 	t.Helper()
 
 	ln, err := quic.ListenEarly(
