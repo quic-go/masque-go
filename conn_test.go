@@ -22,12 +22,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupProxiedConn(t *testing.T) (http3.Stream, net.PacketConn) {
+func setupProxiedConn(t *testing.T) (*http3.Stream, net.PacketConn) {
 	t.Helper()
 
 	targetConn := newUDPConnLocalhost(t)
 
-	strChan := make(chan http3.Stream, 1)
+	strChan := make(chan *http3.Stream, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		strChan <- w.(http3.HTTPStreamer).HTTPStream()
@@ -61,7 +61,7 @@ func setupProxiedConn(t *testing.T) (http3.Stream, net.PacketConn) {
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	t.Cleanup(func() { conn.Close() })
 
-	var str http3.Stream
+	var str *http3.Stream
 	select {
 	case str = <-strChan:
 	case <-time.After(time.Second):
