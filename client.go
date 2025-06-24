@@ -32,7 +32,7 @@ type Client struct {
 
 	dialOnce   sync.Once
 	dialErr    error
-	conn       quic.Connection
+	conn       *quic.Conn
 	clientConn *http3.ClientConn
 }
 
