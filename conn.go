@@ -29,6 +29,9 @@ type proxiedConn struct {
 	localAddr  net.Addr
 	remoteAddr net.Addr
 
+	isBound          bool
+	compressionTable *compressionTable
+
 	closed   atomic.Bool // set when Close is called
 	readDone chan struct{}
 
@@ -41,10 +44,11 @@ type proxiedConn struct {
 
 var _ net.PacketConn = &proxiedConn{}
 
-func newProxiedConn(str http3.Stream, local net.Addr) *proxiedConn {
+func newProxiedConn(str http3.Stream, local net.Addr, isBound bool) *proxiedConn {
 	c := &proxiedConn{
 		str:       str,
 		localAddr: local,
+		isBound:   isBound,
 		readDone:  make(chan struct{}),
 	}
 	c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
@@ -55,6 +59,36 @@ func newProxiedConn(str http3.Stream, local net.Addr) *proxiedConn {
 		}
 		str.Close()
 	}()
+
+	if isBound {
+		fmt.Printf("new compression table\n")
+		c.compressionTable = newCompressionTable(true)
+
+		// TODO: The client automatically enables uncompressed datagrams.
+		// Figure out what API can be exposed for this.
+		contextID, err := c.compressionTable.newUncompressedAssignment()
+		if err != nil {
+			panic(err)
+		}
+
+		log.Printf("client: assigned context ID %d to uncompressed datagrams", contextID)
+
+		capsule := compressionAssignCapsule{
+			ContextID: contextID,
+			Addr:      nil,
+		}
+		capsuleData, err := capsule.Marshal()
+		if err != nil {
+			panic(err)
+		}
+		err = http3.WriteCapsule(quicvarint.NewWriter(c.str), compressionAsignCapsuleType, capsuleData)
+		if err != nil {
+			panic(err)
+		}
+
+		// TODO: Wait until proxy acknowledged assignment.
+	}
+
 	return c
 }
 
@@ -82,22 +116,76 @@ start:
 	if err != nil {
 		return 0, nil, fmt.Errorf("masque: malformed datagram: %w", err)
 	}
-	if contextID != 0 {
-		// Drop this datagram. We currently only support proxying of UDP payloads.
-		goto start
+
+	if !c.isBound {
+		if contextID != 0 {
+			// Drop this datagram. We currently only support proxying of UDP payloads.
+			goto start
+		}
+		// If b is too small, additional bytes are discarded.
+		// This mirrors the behavior of large UDP datagrams received on a UDP socket (on Linux).
+		return copy(b, data[n:]), c.remoteAddr, nil
+	} else {
+		addr, found := c.compressionTable.lookupContextID(contextID)
+		if !found {
+			log.Printf("client: dropping incoming datagram because no context ID is assigned to %s", addr.String())
+			goto start
+		}
+
+		log.Printf("client: received datagram (context ID: %d, isCompressed: %t)", contextID, addr != nil)
+
+		if addr != nil {
+			return copy(b, data[n:]), addr, nil
+		} else {
+			dg := uncompressedDatagram{}
+			err := dg.Unmarshal(data[n:])
+			if err != nil {
+				return 0, nil, fmt.Errorf("client: malformed datagram: %w", err)
+			}
+
+			// If b is too small, additional bytes are discarded.
+			// This mirrors the behavior of large UDP datagrams received on a UDP socket (on Linux).
+			return copy(b, dg.Data), dg.Addr, nil
+		}
 	}
-	// If b is too small, additional bytes are discarded.
-	// This mirrors the behavior of large UDP datagrams received on a UDP socket (on Linux).
-	return copy(b, data[n:]), c.remoteAddr, nil
 }
 
 // WriteTo sends a UDP datagram to the target.
-// The net.Addr parameter is ignored.
-func (c *proxiedConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
-	data := make([]byte, 0, len(contextIDZero)+len(p))
-	data = append(data, contextIDZero...)
-	data = append(data, p...)
-	return len(p), c.str.SendDatagram(data)
+// The net.Addr parameter is ignored for unbound connections.
+func (c *proxiedConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	if !c.isBound {
+		data := make([]byte, 0, len(contextIDZero)+len(p))
+		data = append(data, contextIDZero...)
+		data = append(data, p...)
+		return len(p), c.str.SendDatagram(data)
+	} else {
+		contextID, isCompressed, found := c.compressionTable.lookupAddr(addr.(*net.UDPAddr))
+		if !found {
+			return 0, fmt.Errorf("masque: dropping outgoing datagram because no context ID is assigned to %s", addr.String())
+		}
+
+		var data []byte
+		if !isCompressed {
+			dg := uncompressedDatagram{
+				Addr: addr.(*net.UDPAddr),
+				Data: p,
+			}
+			data, err = dg.Marshal()
+			if err != nil {
+				return 0, err
+			}
+		}
+
+		data = prependContextID(data, contextID)
+
+		log.Printf("client: sending datagram (context ID: %d, isCompressed: %t)\n", contextID, isCompressed)
+		err := c.str.SendDatagram(data)
+		if err != nil {
+			return 0, err
+		}
+
+		return len(p), nil
+	}
 }
 
 func (c *proxiedConn) Close() error {
@@ -175,7 +263,9 @@ func skipCapsules(str quicvarint.Reader) error {
 		if err != nil {
 			return err
 		}
-		log.Printf("skipping capsule of type %d", ct)
+
+		// TODO: Currently all capsules are skipped. Properly handle them.
+		log.Printf("client: skipping capsule of type 0x%X", ct)
 		if _, err := io.Copy(io.Discard, r); err != nil {
 			return err
 		}

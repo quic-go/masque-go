@@ -15,14 +15,17 @@ import (
 
 const requestProtocol = "connect-udp"
 
-var capsuleProtocolHeaderValue string
+var sfTrueValue string
+
+const ConnectUDPBindHeader = "Connect-Udp-Bind" // Udp not UDP due to Go's header canonicalization
+const ProxyPublicAddressHeader = "Proxy-Public-Address"
 
 func init() {
 	v, err := httpsfv.Marshal(httpsfv.NewItem(true))
 	if err != nil {
-		panic(fmt.Sprintf("failed to marshal capsule protocol header value: %v", err))
+		panic(fmt.Sprintf("failed to marshal structured fields header value: %v", err))
 	}
-	capsuleProtocolHeaderValue = v
+	sfTrueValue = v
 }
 
 // Request is the parsed CONNECT-UDP request returned from ParseRequest.
@@ -30,6 +33,7 @@ func init() {
 // It can either be DNS name:port or an IP:port.
 type Request struct {
 	Target string
+	Bind   bool
 }
 
 // RequestParseError is returned from ParseRequest if parsing the CONNECT-UDP request fails.
@@ -95,6 +99,27 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 		}
 	}
 
+	// Validate Conect-UDP-Bind header if present
+	bind := false
+	bindHeaderValues, ok := r.Header[ConnectUDPBindHeader]
+	if ok {
+		item, err := httpsfv.UnmarshalItem(bindHeaderValues)
+		if err != nil {
+			return nil, &RequestParseError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        fmt.Errorf("invalid bind header value: %s", bindHeaderValues),
+			}
+		}
+		if v, ok := item.Value.(bool); !ok {
+			return nil, &RequestParseError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        fmt.Errorf("incorrect bind header value type: %s", reflect.TypeOf(item.Value)),
+			}
+		} else if v {
+			bind = true
+		}
+	}
+
 	match := template.Match(r.URL.String())
 	targetHost := unescape(match.Get(uriTemplateTargetHost).String())
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
@@ -104,18 +129,34 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 			Err:        fmt.Errorf("expected target_host and target_port"),
 		}
 	}
-	// IPv6 addresses need to be enclosed in [], otherwise resolving the address will fail.
-	if strings.Contains(targetHost, ":") {
-		targetHost = "[" + targetHost + "]"
-	}
-	targetPort, err := strconv.Atoi(targetPortStr)
-	if err != nil {
-		return nil, &RequestParseError{
-			HTTPStatus: http.StatusBadRequest,
-			Err:        fmt.Errorf("failed to decode target_port: %w", err),
+
+	var target string
+	if !bind {
+		// IPv6 addresses need to be enclosed in [], otherwise resolving the address will fail.
+		if strings.Contains(targetHost, ":") {
+			targetHost = "[" + targetHost + "]"
 		}
+		targetPort, err := strconv.Atoi(targetPortStr)
+		if err != nil {
+			return nil, &RequestParseError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        fmt.Errorf("failed to decode target_port: %w", err),
+			}
+		}
+
+		target = fmt.Sprintf("%s:%d", targetHost, targetPort)
+	} else {
+		if targetHost != "*" || targetPortStr != "*" {
+			return nil, &RequestParseError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        fmt.Errorf("target_host and target_port must be * when binding is requested"),
+			}
+		}
+
+		target = fmt.Sprintf("%s:%s", targetHost, targetPortStr)
 	}
-	return &Request{Target: fmt.Sprintf("%s:%d", targetHost, targetPort)}, nil
+
+	return &Request{Target: target, Bind: bind}, nil
 }
 
 func escape(s string) string   { return strings.ReplaceAll(s, ":", "%3A") }
