@@ -186,6 +186,8 @@ func (c *proxiedConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 			if err != nil {
 				return 0, err
 			}
+		} else {
+			data = p
 		}
 
 		data = prependContextID(data, contextID)
