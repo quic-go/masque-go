@@ -78,7 +78,7 @@ func (t *compressionTable) findUnusedContextID() (contextID uint64) {
 	highest := uint64(0)
 
 	if t.uncompressedContextID != nil {
-		return *t.uncompressedContextID
+		highest = *t.uncompressedContextID
 	}
 
 	for contextID := range t.compressions {
