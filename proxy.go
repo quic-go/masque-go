@@ -24,7 +24,7 @@ const (
 var contextIDZero = quicvarint.Append([]byte{}, 0)
 
 type proxyEntry struct {
-	str  http3.Stream
+	str  *http3.Stream
 	conn *net.UDPConn
 }
 
@@ -153,7 +153,7 @@ func (s *Proxy) proxyConnectedSocket(w http.ResponseWriter, conn *net.UDPConn, i
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream, isListening bool) error {
+func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3Stream, isListening bool) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
@@ -208,7 +208,7 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str http3.Stream, isListening b
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream, isListening bool) error {
+func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3Stream, isListening bool) error {
 	b := make([]byte, 1500)
 	for {
 		n, addr, err := conn.ReadFrom(b)
@@ -253,7 +253,7 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str http3.Stream, isListenin
 }
 
 // TODO: Make this reusable to the proxiedConn.
-func (s *Proxy) processCapsule(str http3.Stream, isListening bool) error {
+func (s *Proxy) processCapsule(str http3Stream, isListening bool) error {
 	reader := quicvarint.NewReader(str)
 	writer := quicvarint.NewWriter(str)
 	for {

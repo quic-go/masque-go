@@ -1,6 +1,7 @@
 package masque_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -8,9 +9,14 @@ import (
 	"crypto/x509/pkix"
 	"log"
 	"math/big"
+	"net"
+	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -66,6 +72,57 @@ func generateLeafCert(ca *x509.Certificate, caPrivateKey *rsa.PrivateKey) (*x509
 		return nil, nil, err
 	}
 	return cert, privKey, nil
+}
+
+func newUDPConnLocalhost(t testing.TB) *net.UDPConn {
+	t.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+func newConnPair(t *testing.T) (client, server *quic.Conn) {
+	t.Helper()
+
+	ln, err := quic.ListenEarly(
+		newUDPConnLocalhost(t),
+		tlsConf,
+		&quic.Config{
+			InitialStreamReceiveWindow:     1 << 60,
+			InitialConnectionReceiveWindow: 1 << 60,
+			EnableDatagrams:                true,
+		},
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cl, err := quic.DialEarly(
+		ctx,
+		newUDPConnLocalhost(t),
+		ln.Addr(),
+		&tls.Config{
+			ServerName: "localhost",
+			NextProtos: []string{http3.NextProtoH3},
+			RootCAs:    certPool,
+		},
+		&quic.Config{EnableDatagrams: true},
+	)
+	require.NoError(t, err)
+	require.True(t, cl.ConnectionState().SupportsDatagrams)
+	t.Cleanup(func() { cl.CloseWithError(0, "") })
+
+	conn, err := ln.Accept(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.CloseWithError(0, "") })
+	select {
+	case <-conn.HandshakeComplete():
+		require.True(t, conn.ConnectionState().SupportsDatagrams)
+	case <-ctx.Done():
+		t.Fatal("timeout")
+	}
+	return cl, conn
 }
 
 func init() {

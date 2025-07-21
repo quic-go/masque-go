@@ -1,22 +1,20 @@
-package masque
+package masque_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/quic-go/masque-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/quicvarint"
 	"github.com/stretchr/testify/require"
 	"github.com/yosida95/uritemplate/v3"
-	"go.uber.org/mock/gomock"
 )
 
 func scaleDuration(d time.Duration) time.Duration {
@@ -29,77 +27,91 @@ func scaleDuration(d time.Duration) time.Duration {
 func newRequest(target string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	req.Method = http.MethodConnect
-	req.Proto = requestProtocol
-	req.Header.Add("Capsule-Protocol", sfTrueValue)
+	req.Proto = "connect-udp"
+	req.Header.Add("Capsule-Protocol", "?1")
 	return req
 }
 
 type http3ResponseWriter struct {
 	http.ResponseWriter
-	str http3.Stream
+	str *http3.Stream
 }
 
 var _ http3.HTTPStreamer = &http3ResponseWriter{}
 
-func (s *http3ResponseWriter) HTTPStream() http3.Stream { return s.str }
+func (s *http3ResponseWriter) HTTPStream() *http3.Stream { return s.str }
 
 func TestProxyCloseProxiedConn(t *testing.T) {
-	testDone := make(chan struct{})
-	defer close(testDone)
+	clientConn, serverConn := newConnPair(t)
+	serverPort := serverConn.LocalAddr().(*net.UDPAddr).Port
+	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", serverPort))
 
-	remoteServerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	p := masque.Proxy{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseRequest(r, template)
+		if err != nil {
+			t.Logf("error parsing request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		p.Proxy(w, req)
+	})
+	server := &http3.Server{
+		Handler:         mux,
+		EnableDatagrams: true,
+	}
+	defer server.Close()
+	go server.ServeQUICConn(serverConn)
+
+	tr := &http3.Transport{
+		EnableDatagrams: true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	reqStr, err := tr.NewClientConn(clientConn).OpenRequestStream(ctx)
 	require.NoError(t, err)
 
-	p := Proxy{}
-	req := newRequest(fmt.Sprintf("https://localhost:1234/masque?h=localhost&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port))
-	rec := httptest.NewRecorder()
-	done := make(chan struct{})
-	str := NewMockStream(gomock.NewController(t))
-	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(context.Context) ([]byte, error) {
-		return append(contextIDZero, []byte("foo")...), nil
-	})
-	// This datagram is received after the connection is closed.
-	// We expect that it won't get sent on.
-	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(context.Context) ([]byte, error) {
-		<-done
-		return []byte("bar"), nil
-	})
-	str.EXPECT().ReceiveDatagram(gomock.Any()).DoAndReturn(func(context.Context) ([]byte, error) {
-		<-testDone
-		return nil, errors.New("test done")
-	}).MaxTimes(1)
-	closeStream := make(chan struct{})
-	str.EXPECT().Read(gomock.Any()).DoAndReturn(func([]byte) (int, error) {
-		<-closeStream
-		return 0, io.EOF
-	})
-	r, err := ParseRequest(req, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	targetConn := newUDPConnLocalhost(t)
+	req := newRequest(fmt.Sprintf("https://localhost:%d/masque?h=localhost&p=%d", serverPort, targetConn.LocalAddr().(*net.UDPAddr).Port))
+	require.NoError(t, reqStr.SendRequestHeader(req))
+	hdr, err := reqStr.ReadResponse()
 	require.NoError(t, err)
-	go p.Proxy(&http3ResponseWriter{ResponseWriter: rec, str: str}, r)
-	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusOK, hdr.StatusCode)
+
+	// we don't use reqStr.SendDatagram(), because we want to be able to send datagrams for this stream after we've closed it
+	sendDatagram := func(t *testing.T, b []byte) {
+		t.Helper()
+		data := quicvarint.Append(nil, uint64(reqStr.StreamID()/4)) // quarter stream ID
+		data = append(data, byte(0))                                // context ID
+		require.NoError(t, clientConn.SendDatagram(append(data, b...)))
+	}
+
+	sendDatagram(t, []byte("foo"))
 
 	b := make([]byte, 100)
-	n, _, err := remoteServerConn.ReadFrom(b)
+	targetConn.SetReadDeadline(time.Now().Add(time.Second))
+	n, _, err := targetConn.ReadFrom(b)
 	require.NoError(t, err)
 	require.Equal(t, []byte("foo"), b[:n])
+	require.NoError(t, reqStr.Close())
 
-	var once sync.Once
-	str.EXPECT().Close().Do(func() error {
-		once.Do(func() { close(done) })
-		return nil
-	}).MinTimes(1)
-	close(closeStream)
+	// make sure the stream is recognized as closed by the proxy
+	time.Sleep(scaleDuration(20 * time.Millisecond))
 
-	// Make sure that the "bar" datagram didn't get proxied.
-	remoteServerConn.SetReadDeadline(time.Now().Add(scaleDuration(25 * time.Millisecond)))
-	_, _, err = remoteServerConn.ReadFrom(b)
+	sendDatagram(t, []byte("bar"))
+
+	// make sure that the "bar" datagram didn't get proxied
+	targetConn.SetReadDeadline(time.Now().Add(scaleDuration(25 * time.Millisecond)))
+	_, _, err = targetConn.ReadFrom(b)
 	require.Error(t, err)
 }
 
 func TestProxyDialFailure(t *testing.T) {
-	p := Proxy{}
+	p := masque.Proxy{}
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
-	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
@@ -108,11 +120,11 @@ func TestProxyDialFailure(t *testing.T) {
 }
 
 func TestProxyingAfterClose(t *testing.T) {
-	p := &Proxy{}
+	p := &masque.Proxy{}
 	require.NoError(t, p.Close())
 
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
-	req, err := ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
 	require.NoError(t, err)
 
 	t.Run("proxying", func(t *testing.T) {
