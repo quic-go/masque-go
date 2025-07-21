@@ -27,6 +27,12 @@ func runEchoServer(t *testing.T, addr *net.UDPAddr) *net.UDPConn {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", addr)
 	require.NoError(t, err)
+	runEchoServerFromConn(t, conn)
+	return conn
+}
+
+func runEchoServerFromConn(t *testing.T, conn net.PacketConn) {
+	t.Helper()
 	go func() {
 		for {
 			b := make([]byte, 1500)
@@ -39,7 +45,6 @@ func runEchoServer(t *testing.T, addr *net.UDPAddr) *net.UDPConn {
 			}
 		}
 	}()
-	return conn
 }
 
 func TestProxyToIP(t *testing.T) {
@@ -267,4 +272,90 @@ func TestProxyShutdown(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	require.True(t, errored, "expected datagram write side to error")
+}
+
+func TestProxyListen(t *testing.T) {
+	// Setup proxy
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer conn.Close()
+	t.Logf("Proxy listening on %s", conn.LocalAddr())
+	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", conn.LocalAddr().(*net.UDPAddr).Port))
+
+	mux := http.NewServeMux()
+	server := http3.Server{
+		TLSConfig:       tlsConf,
+		QUICConfig:      &quic.Config{EnableDatagrams: true},
+		EnableDatagrams: true,
+		Handler:         mux,
+	}
+	defer server.Close()
+	proxy := masque.Proxy{}
+	defer proxy.Close()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseRequest(r, template)
+		if err != nil {
+			t.Log("Upgrade failed:", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.Target != "*:*" {
+			t.Log("unexpected request target:", req.Target)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if req.Bind == false {
+			t.Log("unexpected request bind:", req.Bind)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		proxy.ProxyListen(w, req, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	})
+	go func() {
+		if err := server.Serve(conn); err != nil {
+			return
+		}
+	}()
+
+	// Setup server that listens through the proxy
+	cl := masque.Client{
+		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+	}
+	defer cl.Close()
+
+	proxiedConn, publicAddrs, rsp, err := cl.Listen(context.Background(), template)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Equal(t, len(publicAddrs), 1)
+
+	t.Logf("Echo server available at %s", publicAddrs[0])
+
+	runEchoServerFromConn(t, proxiedConn)
+	defer proxiedConn.Close()
+
+	// Connect to the server through the proxy
+	remoteConn, err := net.DialUDP("udp", nil, publicAddrs[0])
+	require.NoError(t, err)
+	t.Logf("Echo client is sending from %s", remoteConn.LocalAddr())
+	defer remoteConn.Close()
+
+	// Wait a brief moment to let assignment for uncompressed datagrams be established.
+	<-time.After(100 * time.Millisecond)
+
+	// Send data back and forth
+	_, err = remoteConn.Write([]byte("ping"))
+	require.NoError(t, err)
+	b := make([]byte, 1500)
+	n, _, err := remoteConn.ReadFrom(b)
+	require.NoError(t, err)
+	require.Equal(t, []byte("ping"), b[:n])
+	t.Logf("Echo server received %s", string(b[:n]))
+
+	_, err = remoteConn.Write([]byte("pong"))
+	require.NoError(t, err)
+	n, _, err = remoteConn.ReadFrom(b)
+	require.NoError(t, err)
+	require.Equal(t, []byte("pong"), b[:n])
+	t.Logf("Echo client received %s", string(b[:n]))
 }

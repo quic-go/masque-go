@@ -22,7 +22,9 @@ import (
 
 func main() {
 	var proxyURITemplate string
+	var insecureSkipVerify bool
 	flag.StringVar(&proxyURITemplate, "t", "", "URI template")
+	flag.BoolVar(&insecureSkipVerify, "i", false, "insecure skip verify")
 	flag.Parse()
 	if proxyURITemplate == "" {
 		flag.Usage()
@@ -34,6 +36,10 @@ func main() {
 	}
 
 	cl := masque.Client{
+		TLSClientConfig: &tls.Config{
+			NextProtos:         []string{http3.NextProtoH3},
+			InsecureSkipVerify: insecureSkipVerify,
+		},
 		QUICConfig: &quic.Config{
 			EnableDatagrams:   true,
 			InitialPacketSize: 1350,
