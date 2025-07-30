@@ -2,6 +2,7 @@ package masque
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -30,6 +31,7 @@ func init() {
 // It can either be DNS name:port or an IP:port.
 type Request struct {
 	Target string
+	Body io.ReadCloser
 }
 
 // RequestParseError is returned from ParseRequest if parsing the CONNECT-UDP request fails.
@@ -115,7 +117,10 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 			Err:        fmt.Errorf("failed to decode target_port: %w", err),
 		}
 	}
-	return &Request{Target: fmt.Sprintf("%s:%d", targetHost, targetPort)}, nil
+	return &Request{
+		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
+		Body: r.Body,
+	}, nil
 }
 
 func escape(s string) string   { return strings.ReplaceAll(s, ":", "%3A") }

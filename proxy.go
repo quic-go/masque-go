@@ -7,9 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"sync/atomic"
 
-	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 )
@@ -21,18 +19,12 @@ const (
 
 var contextIDZero = quicvarint.Append([]byte{}, 0)
 
-type proxyEntry struct {
-	str  *http3.Stream
-	conn *net.UDPConn
-}
-
 // A Proxy is an RFC 9298 CONNECT-UDP proxy.
 type Proxy struct {
-	closed atomic.Bool
-
 	mx       sync.Mutex
+	closed   bool
 	refCount sync.WaitGroup // counter for the Go routines spawned in Upgrade
-	conns    map[proxyEntry]struct{}
+	closers  map[io.Closer]struct{}
 }
 
 // Proxy proxies a request on a newly created connected UDP socket.
@@ -40,10 +32,13 @@ type Proxy struct {
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
 func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
-	if s.closed.Load() {
+	s.mx.Lock()
+	if s.closed {
+		s.mx.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return net.ErrClosed
 	}
+	s.mx.Unlock()
 
 	addr, err := net.ResolveUDPAddr("udp", r.Target)
 	if err != nil {
@@ -53,7 +48,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 	}
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
-		// TODO(#2): set proxy-status header (might want to use structured headers)
+	// TODO(#2): set proxy-status header (might want to use structured headers)
 		w.WriteHeader(http.StatusGatewayTimeout)
 		return err
 	}
@@ -66,26 +61,28 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
 // It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
-	if s.closed.Load() {
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *net.UDPConn) error {
+	s.mx.Lock()
+	if s.closed {
+		s.mx.Unlock()
 		conn.Close()
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return net.ErrClosed
 	}
 
+	if s.closers == nil {
+		s.closers = make(map[io.Closer]struct{})
+	}
+	s.closers[r.Body] = struct{}{}
+
 	s.refCount.Add(1)
 	defer s.refCount.Done()
+	s.mx.Unlock()
 
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
 
 	str := w.(http3.HTTPStreamer).HTTPStream()
-	s.mx.Lock()
-	if s.conns == nil {
-		s.conns = make(map[proxyEntry]struct{})
-	}
-	s.conns[proxyEntry{str: str, conn: conn}] = struct{}{}
-	s.mx.Unlock()
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -98,8 +95,13 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	}()
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil && !s.closed.Load() {
-			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
+		if err := s.proxyConnReceive(conn, str); err != nil {
+			s.mx.Lock()
+			closed := s.closed
+			s.mx.Unlock()
+			if !closed {
+				log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
+			}
 		}
 		str.Close()
 	}()
@@ -113,6 +115,9 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 		conn.Close()
 	}()
 	wg.Wait()
+	s.mx.Lock()
+	delete(s.closers, r.Body)
+	s.mx.Unlock()
 	return nil
 }
 
@@ -154,15 +159,14 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 
 // Close closes the proxy, immeidately terminating all proxied flows.
 func (s *Proxy) Close() error {
-	s.closed.Store(true)
 	s.mx.Lock()
-	for entry := range s.conns {
-		entry.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
-		entry.str.Close()
-		entry.conn.Close()
+	s.closed = true
+	for c := range s.closers {
+		c.Close()
 	}
-	s.conns = nil
 	s.mx.Unlock()
+
 	s.refCount.Wait()
+	s.closers = nil
 	return nil
 }
