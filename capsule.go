@@ -26,7 +26,7 @@ func (u uncompressedDatagram) Marshal() ([]byte, error) {
 	p2 := make([]byte, 0, 1+len(u.Addr.IP)+2+len(u.Data))
 	p2 = append(p2, ipVersion(u.Addr.IP))
 	p2 = append(p2, u.Addr.IP...)
-	p2 = binary.LittleEndian.AppendUint16(p2, uint16(u.Addr.Port))
+	p2 = binary.BigEndian.AppendUint16(p2, uint16(u.Addr.Port))
 	p2 = append(p2, u.Data...)
 
 	return p2, nil
@@ -45,7 +45,7 @@ func (u *uncompressedDatagram) Unmarshal(p []byte) error {
 
 		addr := &net.UDPAddr{
 			IP:   p[1 : 1+4],
-			Port: int(binary.LittleEndian.Uint16(p[1+4:])),
+			Port: int(binary.BigEndian.Uint16(p[1+4:])),
 		}
 		u.Addr = addr
 		u.Data = p[1+4+2:]
@@ -57,7 +57,7 @@ func (u *uncompressedDatagram) Unmarshal(p []byte) error {
 
 		addr := &net.UDPAddr{
 			IP:   p[1 : 1+16],
-			Port: int(binary.LittleEndian.Uint16(p[1+16:])),
+			Port: int(binary.BigEndian.Uint16(p[1+16:])),
 		}
 		u.Addr = addr
 		u.Data = p[1+16+2:]
@@ -96,7 +96,7 @@ func (c compressionAssignCapsule) Marshal() ([]byte, error) {
 	p2 = quicvarint.Append(p2, c.ContextID)
 	p2 = append(p2, ipVersion(c.Addr.IP))
 	p2 = append(p2, c.Addr.IP...)
-	p2 = binary.LittleEndian.AppendUint16(p2, uint16(c.Addr.Port))
+	p2 = binary.BigEndian.AppendUint16(p2, uint16(c.Addr.Port))
 	return p2, nil
 }
 
@@ -122,7 +122,7 @@ func (c *compressionAssignCapsule) Unmarshal(p []byte) error {
 		c.ContextID = contextID
 		c.Addr = &net.UDPAddr{
 			IP:   p[n+1 : n+1+4],
-			Port: int(binary.LittleEndian.Uint16(p[n+1+4:])),
+			Port: int(binary.BigEndian.Uint16(p[n+1+4:])),
 		}
 		return nil
 	} else if version == 6 {
@@ -133,7 +133,7 @@ func (c *compressionAssignCapsule) Unmarshal(p []byte) error {
 		c.ContextID = contextID
 		c.Addr = &net.UDPAddr{
 			IP:   p[n+1 : n+1+16],
-			Port: int(binary.LittleEndian.Uint16(p[n+1+16:])),
+			Port: int(binary.BigEndian.Uint16(p[n+1+16:])),
 		}
 		return nil
 	} else {
