@@ -70,6 +70,7 @@ func main() {
 		}
 		if req.Bind {
 			proxy.ProxyListen(w, req, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+			// TODO: Do not assume IPv4 here. Bind to multiple addresses and then use the correct one for incoming datagrams.
 		} else {
 			proxy.Proxy(w, req)
 		}

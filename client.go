@@ -88,6 +88,8 @@ func (c *Client) Listen(ctx context.Context, proxyTemplate *uritemplate.Template
 		return conn, nil, resp, err
 	}
 
+	// TODO: Check response code before checking headers
+
 	// Check Connect-UDP-Bind header
 	bindHeaderValues := resp.Header[ConnectUDPBindHeader]
 	item, err := httpsfv.UnmarshalItem(bindHeaderValues)
@@ -116,6 +118,7 @@ func (c *Client) Listen(ctx context.Context, proxyTemplate *uritemplate.Template
 	for i, item := range list {
 		item := item.(httpsfv.Item)
 
+		// TODO: The draft is currently unclear whether the list items are strings or tokens. Adjust the logic here if needed.
 		publicAddrStr, ok := item.Value.(string)
 		if !ok {
 			return nil, nil, nil, fmt.Errorf("masque: expected string in Proxy-Public-Address header")
