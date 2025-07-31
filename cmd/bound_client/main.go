@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 
@@ -29,10 +31,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	var compressingConn masque.CompressingPacketConn
+
 	// 1. Create HTTP/3 server
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		remoteAddr := r.RemoteAddr
+		log.Printf("Remote address: %s", remoteAddr)
+
+		udpAddr, err := net.ResolveUDPAddr("udp", remoteAddr)
+		if err != nil {
+			log.Printf("failed to parse remoteAddr %q as UDPAddr: %v", remoteAddr, err)
+		} else {
+			log.Printf("Parsed UDPAddr: %+v", udpAddr)
+		}
+
+		if compressingConn != nil {
+			log.Println("trying to start compressing")
+			if err := compressingConn.StartCompressing(udpAddr); err != nil {
+				log.Printf("failed to start compressing: %v", err)
+			}
+
+		}
+
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Hello, world!"))
 	})
@@ -72,6 +94,8 @@ func main() {
 	if rsp.StatusCode != http.StatusOK {
 		log.Fatalf("failed to listen: %s", rsp.Status)
 	}
+
+	compressingConn = proxiedConn.(masque.CompressingPacketConn)
 
 	// 3. Profit
 	log.Printf("listening on %s", publicAddrs[0])

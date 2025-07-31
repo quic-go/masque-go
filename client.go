@@ -69,6 +69,11 @@ func (c *Client) Dial(ctx context.Context, proxyTemplate *uritemplate.Template, 
 	return c.dial(ctx, str, false)
 }
 
+type CompressingPacketConn interface {
+	net.PacketConn
+	StartCompressing(addr net.Addr) error
+}
+
 // Listen ...
 func (c *Client) Listen(ctx context.Context, proxyTemplate *uritemplate.Template) (net.PacketConn, []*net.UDPAddr, *http.Response, error) {
 	str, err := proxyTemplate.Expand(uritemplate.Values{

@@ -119,8 +119,9 @@ func (t *compressionTable) newUncompressedAssignment() (contextID uint64, err er
 }
 
 func (t *compressionTable) newCompressedAssignment(addr *net.UDPAddr) (newContextID uint64, err error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	// TODO: Locking here will cause a deadlock in lookupAddr. Figure out at which point we need to lock.
+	// t.mu.Lock()
+	// defer t.mu.Unlock()
 
 	if addr == nil {
 		return 0, fmt.Errorf("address is nil")

@@ -285,3 +285,31 @@ func skipCapsules(str quicvarint.Reader) error {
 		}
 	}
 }
+
+func (c *proxiedConn) StartCompressing(addr net.Addr) error {
+	if !c.isBound {
+		return fmt.Errorf("masque: cannot start compressing on unbound connection")
+	}
+
+	contextID, err := c.compressionTable.newCompressedAssignment(addr.(*net.UDPAddr))
+	if err != nil {
+		return err
+	}
+
+	log.Printf("client: assigned context ID %d to compressed datagrams for address %s", contextID, addr.String())
+
+	capsule := compressionAssignCapsule{
+		ContextID: contextID,
+		Addr:      addr.(*net.UDPAddr),
+	}
+	capsuleData, err := capsule.Marshal()
+	if err != nil {
+		return err
+	}
+	err = http3.WriteCapsule(quicvarint.NewWriter(c.str), compressionAsignCapsuleType, capsuleData)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
