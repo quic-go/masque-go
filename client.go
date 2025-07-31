@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"reflect"
 	"strconv"
 	"sync"
 
+	"github.com/dunglas/httpsfv"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
@@ -51,7 +54,7 @@ func (c *Client) DialAddr(ctx context.Context, proxyTemplate *uritemplate.Templa
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
-	return c.dial(ctx, str)
+	return c.dial(ctx, str, false)
 }
 
 // Dial dials a proxied connection to a target server.
@@ -63,10 +66,77 @@ func (c *Client) Dial(ctx context.Context, proxyTemplate *uritemplate.Template, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
-	return c.dial(ctx, str)
+	return c.dial(ctx, str, false)
 }
 
-func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketConn, *http.Response, error) {
+type CompressingPacketConn interface {
+	net.PacketConn
+	StartCompressing(addr net.Addr) error
+}
+
+// Listen ...
+func (c *Client) Listen(ctx context.Context, proxyTemplate *uritemplate.Template) (net.PacketConn, []*net.UDPAddr, *http.Response, error) {
+	str, err := proxyTemplate.Expand(uritemplate.Values{
+		uriTemplateTargetHost: uritemplate.String("*"),
+		uriTemplateTargetPort: uritemplate.String("*"),
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
+	}
+	conn, resp, err := c.dial(ctx, str, true)
+	if err != nil {
+		return conn, nil, resp, err
+	}
+
+	// TODO: Check response code before checking headers
+
+	// Check Connect-UDP-Bind header
+	bindHeaderValues := resp.Header[ConnectUDPBindHeader]
+	item, err := httpsfv.UnmarshalItem(bindHeaderValues)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("masque: missing Connect-UDP-Bind header")
+
+	}
+	if v, ok := item.Value.(bool); !ok {
+		return nil, nil, nil, fmt.Errorf("masque: incorrect Connect-UDP-Bind header value type: %s", reflect.TypeOf(item.Value))
+	} else if !v {
+		return nil, nil, nil, fmt.Errorf("masque: proxy didn't accept bind request")
+	}
+
+	// Parse the Proxy-Public-Address header
+	publicAddrHeaderValues := resp.Header[ProxyPublicAddressHeader]
+	list, err := httpsfv.UnmarshalList(publicAddrHeaderValues)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("masque: failed to parse Proxy-Public-Address header: %w", err)
+	}
+
+	if len(list) == 0 {
+		return nil, nil, nil, fmt.Errorf("masque: empty Proxy-Public-Address header")
+	}
+
+	publicAddrs := make([]*net.UDPAddr, len(list))
+	for i, item := range list {
+		item := item.(httpsfv.Item)
+
+		// TODO: The draft is currently unclear whether the list items are strings or tokens. Adjust the logic here if needed.
+		publicAddrStr, ok := item.Value.(string)
+		if !ok {
+			return nil, nil, nil, fmt.Errorf("masque: expected string in Proxy-Public-Address header")
+		}
+
+		addr, err := netip.ParseAddrPort(publicAddrStr)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("masque: failed to parse address %s in Proxy-Public-Address header: %w", publicAddrStr, err)
+		}
+
+		udpAddr := net.UDPAddrFromAddrPort(addr)
+		publicAddrs[i] = udpAddr
+	}
+
+	return conn, publicAddrs, resp, nil
+}
+
+func (c *Client) dial(ctx context.Context, expandedTemplate string, bind bool) (net.PacketConn, *http.Response, error) {
 	u, err := url.Parse(expandedTemplate)
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to parse URI: %w", err)
@@ -119,11 +189,15 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to open request stream: %w", err)
 	}
+	header := http.Header{http3.CapsuleProtocolHeader: []string{sfTrueValue}}
+	if bind {
+		header.Set(ConnectUDPBindHeader, sfTrueValue)
+	}
 	if err := rstr.SendRequestHeader(&http.Request{
 		Method: http.MethodConnect,
 		Proto:  requestProtocol,
 		Host:   u.Host,
-		Header: http.Header{http3.CapsuleProtocolHeader: []string{capsuleProtocolHeaderValue}},
+		Header: header,
 		URL:    u,
 	}); err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
@@ -136,7 +210,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, rsp, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
-	return newProxiedConn(rstr, c.conn.LocalAddr()), rsp, nil
+	return newProxiedConn(rstr, c.conn.LocalAddr(), bind), rsp, nil
 }
 
 // Close closes the connection to the proxy.

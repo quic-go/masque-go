@@ -6,6 +6,7 @@ import (
 	"flag"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -55,16 +56,24 @@ func main() {
 	}
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseRequest(r, template)
+		log.Printf("parsed request: %+v", req)
 		if err != nil {
 			var perr *masque.RequestParseError
 			if errors.As(err, &perr) {
+				log.Printf("parsed request error: %v", perr)
 				w.WriteHeader(perr.HTTPStatus)
 				return
 			}
+			log.Printf("failed to parse request: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		if req.Bind {
+			proxy.ProxyListen(w, req, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+			// TODO: Do not assume IPv4 here. Bind to multiple addresses and then use the correct one for incoming datagrams.
+		} else {
+			proxy.Proxy(w, req)
+		}
 	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("failed to run proxy: %v", err)
