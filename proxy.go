@@ -2,6 +2,7 @@ package masque
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/dunglas/httpsfv"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
@@ -35,6 +37,36 @@ type Proxy struct {
 	conns    map[proxyEntry]struct{}
 }
 
+func errToStatus(err error) int {
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return http.StatusGatewayTimeout
+	}
+	var addrErr *net.AddrError
+	var parseError *net.ParseError
+	if errors.As(err, &addrErr) || errors.As(err, &parseError) {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
+}
+
+func dnsErrorToProxyStatus(proxyStatus *httpsfv.Item, dnsError *net.DNSError) {
+	if dnsError.Timeout() {
+		proxyStatus.Params.Add("error", "dns_timeout")
+	} else {
+		proxyStatus.Params.Add("error", "dns_error")
+		if dnsError.IsNotFound {
+			// "Negative response" isn't a real RCODE, but it is included
+			// in RFC 8499 Section 3 as a sort of meta/pseudo-RCODE like NODATA,
+			// and this section is referenced by the definition of the "rcode"
+			// parameter.
+			proxyStatus.Params.Add("rcode", "Negative response")
+		} else {
+			// DNS intermediaries normally convert miscellaneous errors to SERVFAIL.
+			proxyStatus.Params.Add("rcode", "SERVFAIL")
+		}
+	}
+}
+
 // Proxy proxies a request on a newly created connected UDP socket.
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
@@ -45,20 +77,36 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 		return net.ErrClosed
 	}
 
+	proxyStatus := httpsfv.NewItem(r.Host)
 	addr, err := net.ResolveUDPAddr("udp", r.Target)
 	if err != nil {
-		// TODO(#2): set proxy-status header (might want to use structured headers)
-		w.WriteHeader(http.StatusGatewayTimeout)
+		var dnsError *net.DNSError
+		if errors.As(err, &dnsError) {
+			dnsErrorToProxyStatus(&proxyStatus, dnsError)
+		}
+		proxyStatus.Params.Add("details", err.Error())
+		proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
+		w.Header().Add("proxy-status", proxyStatusVal)
+
+		w.WriteHeader(errToStatus(err))
 		return err
 	}
+	proxyStatus.Params.Add("next-hop", addr.String())
+
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
-		// TODO(#2): set proxy-status header (might want to use structured headers)
-		w.WriteHeader(http.StatusGatewayTimeout)
+		proxyStatus.Params.Add("error", "destination_ip_unroutable")
+		proxyStatus.Params.Add("details", err.Error())
+		proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
+		w.Header().Add("proxy-status", proxyStatusVal)
+
+		w.WriteHeader(errToStatus(err))
 		return err
 	}
 	defer conn.Close()
 
+	proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
+	w.Header().Add("proxy-status", proxyStatusVal)
 	return s.ProxyConnectedSocket(w, r, conn)
 }
 

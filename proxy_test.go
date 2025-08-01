@@ -80,6 +80,13 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, hdr.StatusCode)
 
+	// Check proxy-status header
+	proxyStatus := hdr.Header.Get("proxy-status")
+	hostPart := fmt.Sprintf("\"localhost:%d\";", serverPort)
+	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
+	nextHop := fmt.Sprintf(";next-hop=\"%s\"", targetConn.LocalAddr().String())
+	require.Contains(t, proxyStatus, nextHop)
+
 	// we don't use reqStr.SendDatagram(), because we want to be able to send datagrams for this stream after we've closed it
 	sendDatagram := func(t *testing.T, b []byte) {
 		t.Helper()
@@ -108,7 +115,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestProxyDialFailure(t *testing.T) {
+func TestProxyBadPort(t *testing.T) {
 	p := masque.Proxy{}
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=70000") // invalid port number
 	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
@@ -116,7 +123,33 @@ func TestProxyDialFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	require.ErrorContains(t, p.Proxy(rec, req), "invalid port")
-	require.Equal(t, http.StatusGatewayTimeout, rec.Code)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	proxyStatus := rec.Header().Get("proxy-status")
+	hostPart := "\"localhost:1234\";"
+	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
+	require.Contains(t, proxyStatus, ";details=")
+	require.Contains(t, proxyStatus, "invalid port")
+	require.NotContains(t, proxyStatus, ";error=")
+}
+
+func TestProxyNXDOMAIN(t *testing.T) {
+	p := masque.Proxy{}
+	r := newRequest("https://localhost:1234/masque?h=nxdomain.test&p=12345") // invalid port number
+	req, err := masque.ParseRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+
+	require.ErrorContains(t, p.Proxy(rec, req), "no such host")
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+
+	proxyStatus := rec.Header().Get("proxy-status")
+	hostPart := "\"localhost:1234\";"
+	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
+	require.Contains(t, proxyStatus, ";error=\"dns_error\"")
+	require.Contains(t, proxyStatus, ";rcode=\"Negative response\"")
+	require.Contains(t, proxyStatus, "details=")
+	require.Contains(t, proxyStatus, "no such host")
 }
 
 func TestProxyingAfterClose(t *testing.T) {
