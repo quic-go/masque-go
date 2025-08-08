@@ -98,7 +98,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 		proxyStatus.Params.Add("error", "destination_ip_unroutable")
 		proxyStatus.Params.Add("details", err.Error())
 		proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
-		w.Header().Add("proxy-status", proxyStatusVal)
+		w.Header().Add("Proxy-Status", proxyStatusVal)
 
 		w.WriteHeader(errToStatus(err))
 		return err
@@ -106,7 +106,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 	defer conn.Close()
 
 	proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
-	w.Header().Add("proxy-status", proxyStatusVal)
+	w.Header().Add("Proxy-Status", proxyStatusVal)
 	return s.ProxyConnectedSocket(w, r, conn)
 }
 
