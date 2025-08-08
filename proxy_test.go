@@ -82,9 +82,9 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 
 	// Check proxy-status header
 	proxyStatus := hdr.Header.Get("proxy-status")
-	hostPart := fmt.Sprintf("\"localhost:%d\";", serverPort)
+	hostPart := fmt.Sprintf(`"localhost:%d";`, serverPort)
 	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
-	nextHop := fmt.Sprintf(";next-hop=\"%s\"", targetConn.LocalAddr().String())
+	nextHop := fmt.Sprintf(`;next-hop="%s"`, targetConn.LocalAddr().String())
 	require.Contains(t, proxyStatus, nextHop)
 
 	// we don't use reqStr.SendDatagram(), because we want to be able to send datagrams for this stream after we've closed it
@@ -126,7 +126,7 @@ func TestProxyBadPort(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	proxyStatus := rec.Header().Get("proxy-status")
-	hostPart := "\"localhost:1234\";"
+	hostPart := `"localhost:1234";`
 	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
 	require.Contains(t, proxyStatus, ";details=")
 	require.Contains(t, proxyStatus, "invalid port")
@@ -144,10 +144,10 @@ func TestProxyNXDOMAIN(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 
 	proxyStatus := rec.Header().Get("proxy-status")
-	hostPart := "\"localhost:1234\";"
+	hostPart := `"localhost:1234";`
 	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
-	require.Contains(t, proxyStatus, ";error=\"dns_error\"")
-	require.Contains(t, proxyStatus, ";rcode=\"Negative response\"")
+	require.Contains(t, proxyStatus, `;error="dns_error"`)
+	require.Contains(t, proxyStatus, `;rcode="Negative response"`)
 	require.Contains(t, proxyStatus, "details=")
 	require.Contains(t, proxyStatus, "no such host")
 }
