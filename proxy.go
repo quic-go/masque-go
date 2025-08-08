@@ -38,15 +38,22 @@ type Proxy struct {
 }
 
 func errToStatus(err error) int {
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		// Consistent with RFC 9209 Section 2.3.1.
 		return http.StatusGatewayTimeout
+	}
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) {
+		// Recommended by RFC 9209 Section 2.3.2.
+		return http.StatusBadGateway
 	}
 	var addrErr *net.AddrError
 	var parseError *net.ParseError
 	if errors.As(err, &addrErr) || errors.As(err, &parseError) {
 		return http.StatusBadRequest
 	}
-	return http.StatusBadGateway
+	return http.StatusInternalServerError
 }
 
 func dnsErrorToProxyStatus(proxyStatus *httpsfv.Item, dnsError *net.DNSError) {
@@ -78,16 +85,27 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 	}
 
 	proxyStatus := httpsfv.NewItem(r.Host)
+	// Adds the proxy status to the header.  Returns
+	// the input error, or a new one if serialization fails.
+	writeProxyStatus := func(err error) error {
+		if err != nil {
+			proxyStatus.Params.Add("details", err.Error())
+		}
+		proxyStatusVal, marshalErr := httpsfv.Marshal(proxyStatus)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		w.Header().Add("Proxy-Status", proxyStatusVal)
+		return err
+	}
+
 	addr, err := net.ResolveUDPAddr("udp", r.Target)
 	if err != nil {
 		var dnsError *net.DNSError
 		if errors.As(err, &dnsError) {
 			dnsErrorToProxyStatus(&proxyStatus, dnsError)
 		}
-		proxyStatus.Params.Add("details", err.Error())
-		proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
-		w.Header().Add("proxy-status", proxyStatusVal)
-
+		err = writeProxyStatus(err)
 		w.WriteHeader(errToStatus(err))
 		return err
 	}
@@ -96,25 +114,24 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		proxyStatus.Params.Add("error", "destination_ip_unroutable")
-		proxyStatus.Params.Add("details", err.Error())
-		proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
-		w.Header().Add("Proxy-Status", proxyStatusVal)
-
+		err = writeProxyStatus(err)
 		w.WriteHeader(errToStatus(err))
 		return err
 	}
 	defer conn.Close()
 
-	proxyStatusVal, _ := httpsfv.Marshal(proxyStatus)
-	w.Header().Add("Proxy-Status", proxyStatusVal)
+	if err = writeProxyStatus(nil); err != nil {
+		w.WriteHeader(errToStatus(err))
+		return err
+	}
 	return s.ProxyConnectedSocket(w, r, conn)
 }
 
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
-// Applications may add custom header fields to the response header,
-// but MUST NOT call WriteHeader on the http.ResponseWriter.
-// It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
+// Applications may add custom header fields such as Proxy-Status
+// to the response header, but MUST NOT call WriteHeader on the
+// http.ResponseWriter. It closes the connection before returning.
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *net.UDPConn) error {
 	if s.closed.Load() {
 		conn.Close()
 		w.WriteHeader(http.StatusServiceUnavailable)

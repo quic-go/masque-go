@@ -81,7 +81,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	require.Equal(t, http.StatusOK, hdr.StatusCode)
 
 	// Check proxy-status header
-	proxyStatus := hdr.Header.Get("proxy-status")
+	proxyStatus := hdr.Header.Get("Proxy-Status")
 	hostPart := fmt.Sprintf(`"localhost:%d";`, serverPort)
 	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
 	nextHop := fmt.Sprintf(`;next-hop="%s"`, targetConn.LocalAddr().String())
@@ -125,7 +125,7 @@ func TestProxyBadPort(t *testing.T) {
 	require.ErrorContains(t, p.Proxy(rec, req), "invalid port")
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
-	proxyStatus := rec.Header().Get("proxy-status")
+	proxyStatus := rec.Header().Get("Proxy-Status")
 	hostPart := `"localhost:1234";`
 	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
 	require.Contains(t, proxyStatus, ";details=")
@@ -143,7 +143,7 @@ func TestProxyNXDOMAIN(t *testing.T) {
 	require.ErrorContains(t, p.Proxy(rec, req), "no such host")
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 
-	proxyStatus := rec.Header().Get("proxy-status")
+	proxyStatus := rec.Header().Get("Proxy-Status")
 	hostPart := `"localhost:1234";`
 	require.Equal(t, hostPart, proxyStatus[:len(hostPart)])
 	require.Contains(t, proxyStatus, `;error="dns_error"`)
