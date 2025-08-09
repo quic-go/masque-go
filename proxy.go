@@ -2,6 +2,7 @@ package masque
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/dunglas/httpsfv"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
@@ -35,6 +37,43 @@ type Proxy struct {
 	conns    map[proxyEntry]struct{}
 }
 
+func errToStatus(err error) int {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		// Consistent with RFC 9209 Section 2.3.1.
+		return http.StatusGatewayTimeout
+	}
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) {
+		// Recommended by RFC 9209 Section 2.3.2.
+		return http.StatusBadGateway
+	}
+	var addrErr *net.AddrError
+	var parseError *net.ParseError
+	if errors.As(err, &addrErr) || errors.As(err, &parseError) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+func dnsErrorToProxyStatus(proxyStatus *httpsfv.Item, dnsError *net.DNSError) {
+	if dnsError.Timeout() {
+		proxyStatus.Params.Add("error", "dns_timeout")
+	} else {
+		proxyStatus.Params.Add("error", "dns_error")
+		if dnsError.IsNotFound {
+			// "Negative response" isn't a real RCODE, but it is included
+			// in RFC 8499 Section 3 as a sort of meta/pseudo-RCODE like NODATA,
+			// and this section is referenced by the definition of the "rcode"
+			// parameter.
+			proxyStatus.Params.Add("rcode", "Negative response")
+		} else {
+			// DNS intermediaries normally convert miscellaneous errors to SERVFAIL.
+			proxyStatus.Params.Add("rcode", "SERVFAIL")
+		}
+	}
+}
+
 // Proxy proxies a request on a newly created connected UDP socket.
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
@@ -45,28 +84,54 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 		return net.ErrClosed
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", r.Target)
-	if err != nil {
-		// TODO(#2): set proxy-status header (might want to use structured headers)
-		w.WriteHeader(http.StatusGatewayTimeout)
+	proxyStatus := httpsfv.NewItem(r.Host)
+	// Adds the proxy status to the header.  Returns
+	// the input error, or a new one if serialization fails.
+	writeProxyStatus := func(err error) error {
+		if err != nil {
+			proxyStatus.Params.Add("details", err.Error())
+		}
+		proxyStatusVal, marshalErr := httpsfv.Marshal(proxyStatus)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		w.Header().Add("Proxy-Status", proxyStatusVal)
 		return err
 	}
+
+	addr, err := net.ResolveUDPAddr("udp", r.Target)
+	if err != nil {
+		var dnsError *net.DNSError
+		if errors.As(err, &dnsError) {
+			dnsErrorToProxyStatus(&proxyStatus, dnsError)
+		}
+		err = writeProxyStatus(err)
+		w.WriteHeader(errToStatus(err))
+		return err
+	}
+	proxyStatus.Params.Add("next-hop", addr.String())
+
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
-		// TODO(#2): set proxy-status header (might want to use structured headers)
-		w.WriteHeader(http.StatusGatewayTimeout)
+		proxyStatus.Params.Add("error", "destination_ip_unroutable")
+		err = writeProxyStatus(err)
+		w.WriteHeader(errToStatus(err))
 		return err
 	}
 	defer conn.Close()
 
+	if err = writeProxyStatus(nil); err != nil {
+		w.WriteHeader(errToStatus(err))
+		return err
+	}
 	return s.ProxyConnectedSocket(w, r, conn)
 }
 
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
-// Applications may add custom header fields to the response header,
-// but MUST NOT call WriteHeader on the http.ResponseWriter.
-// It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
+// Applications may add custom header fields such as Proxy-Status
+// to the response header, but MUST NOT call WriteHeader on the
+// http.ResponseWriter. It closes the connection before returning.
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *net.UDPConn) error {
 	if s.closed.Load() {
 		conn.Close()
 		w.WriteHeader(http.StatusServiceUnavailable)
