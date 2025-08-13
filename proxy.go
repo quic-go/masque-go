@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/dunglas/httpsfv"
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
 )
@@ -20,6 +21,16 @@ const (
 )
 
 var contextIDZero = quicvarint.Append([]byte{}, 0)
+
+type proxyEntry struct {
+	str  *http3.Stream
+	conn *net.UDPConn
+}
+
+func (e proxyEntry) Close() error {
+	e.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeConnectError))
+	return errors.Join(e.str.Close(), e.conn.Close())
+}
 
 // A Proxy is an RFC 9298 CONNECT-UDP proxy.
 type Proxy struct {
@@ -136,11 +147,12 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	}
 
 	str := w.(http3.HTTPStreamer).HTTPStream()
+	entry := proxyEntry{str: str, conn: conn}
 
 	if s.closers == nil {
 		s.closers = make(map[io.Closer]struct{})
 	}
-	s.closers[str] = struct{}{}
+	s.closers[entry] = struct{}{}
 
 	s.refCount.Add(1)
 	defer s.refCount.Done()
@@ -181,7 +193,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	}()
 	wg.Wait()
 	s.mx.Lock()
-	delete(s.closers, str)
+	delete(s.closers, entry)
 	s.mx.Unlock()
 	return nil
 }
@@ -227,8 +239,8 @@ func (s *Proxy) Close() error {
 	s.mx.Lock()
 	s.closed = true
 	var errs []error
-	for c := range s.closers {
-		errs = append(errs, c.Close())
+	for closer := range s.closers {
+		errs = append(errs, closer.Close())
 	}
 	s.mx.Unlock()
 
