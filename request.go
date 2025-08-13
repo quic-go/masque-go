@@ -2,7 +2,6 @@ package masque
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -32,7 +31,6 @@ func init() {
 type Request struct {
 	Target string
 	Host   string
-	Body   io.ReadCloser
 }
 
 // RequestParseError is returned from ParseRequest if parsing the CONNECT-UDP request fails.
@@ -121,7 +119,6 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	return &Request{
 		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
 		Host:   r.Host,
-		Body:   r.Body,
 	}, nil
 }
 

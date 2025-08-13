@@ -126,7 +126,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *Request) error {
 // Applications may add custom header fields such as Proxy-Status
 // to the response header, but MUST NOT call WriteHeader on the
 // http.ResponseWriter. It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *net.UDPConn) error {
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *net.UDPConn) error {
 	s.mx.Lock()
 	if s.closed {
 		s.mx.Unlock()
@@ -135,10 +135,12 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *ne
 		return net.ErrClosed
 	}
 
+	str := w.(http3.HTTPStreamer).HTTPStream()
+
 	if s.closers == nil {
 		s.closers = make(map[io.Closer]struct{})
 	}
-	s.closers[r.Body] = struct{}{}
+	s.closers[str] = struct{}{}
 
 	s.refCount.Add(1)
 	defer s.refCount.Done()
@@ -146,8 +148,6 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *ne
 
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
-
-	str := w.(http3.HTTPStreamer).HTTPStream()
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -181,7 +181,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *ne
 	}()
 	wg.Wait()
 	s.mx.Lock()
-	delete(s.closers, r.Body)
+	delete(s.closers, str)
 	s.mx.Unlock()
 	return nil
 }
@@ -222,16 +222,17 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 	}
 }
 
-// Close closes the proxy, immeidately terminating all proxied flows.
+// Close closes the proxy, immediately terminating all proxied flows.
 func (s *Proxy) Close() error {
 	s.mx.Lock()
 	s.closed = true
+	var errs []error
 	for c := range s.closers {
-		c.Close()
+		errs = append(errs, c.Close())
 	}
 	s.mx.Unlock()
 
 	s.refCount.Wait()
 	s.closers = nil
-	return nil
+	return errors.Join(errs...)
 }
