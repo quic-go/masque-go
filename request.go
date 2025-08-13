@@ -31,7 +31,8 @@ func init() {
 // It can either be DNS name:port or an IP:port.
 type Request struct {
 	Target string
-	Body io.ReadCloser
+	Host   string
+	Body   io.ReadCloser
 }
 
 // RequestParseError is returned from ParseRequest if parsing the CONNECT-UDP request fails.
@@ -119,7 +120,8 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	}
 	return &Request{
 		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
-		Body: r.Body,
+		Host:   r.Host,
+		Body:   r.Body,
 	}, nil
 }
 
