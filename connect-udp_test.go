@@ -19,6 +19,9 @@ import (
 	"go.uber.org/goleak"
 )
 
+var tlsConfig = &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true}
+
+
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
@@ -65,16 +68,10 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template, EnableDatagrams: true}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Log("Upgrade failed:", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		proxy.Proxy(w, req)
+		require.NoError(t, proxy.Proxy(w, r))
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -83,7 +80,8 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 	}()
 
 	cl := masque.Client{
-		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+		TLSClientConfig: tlsConfig,
+		QUICConfig: &quic.Config{EnableDatagrams: true},
 	}
 	defer cl.Close()
 	proxiedConn, _, err := cl.Dial(
@@ -102,6 +100,11 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 }
 
 func TestProxyToHostname(t *testing.T) {
+	t.Run("Using QUIC Datagrams", func(t *testing.T) { testProxyToHostname(t, true); })
+	t.Run("Using Datagram Capsules", func(t *testing.T) { testProxyToHostname(t, false); })
+}
+
+func testProxyToHostname(t *testing.T, enableDatagrams bool) {
 	remoteServerConn := runEchoServer(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	defer remoteServerConn.Close()
 
@@ -114,28 +117,18 @@ func TestProxyToHostname(t *testing.T) {
 	mux := http.NewServeMux()
 	server := http3.Server{
 		TLSConfig:       tlsConf,
-		QUICConfig:      &quic.Config{EnableDatagrams: true},
-		EnableDatagrams: true,
+		QUICConfig:      &quic.Config{EnableDatagrams: enableDatagrams},
+		EnableDatagrams: enableDatagrams,
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template, EnableDatagrams: enableDatagrams}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Log("Upgrade failed:", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if req.Target != "quic-go.net:1234" {
-			t.Log("unexpected request target:", req.Target)
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
 		// In this test, we don't actually want to connect to quic-go.net
 		// Replace the target with the UDP echoer we spun up earlier.
-		req.Target = remoteServerConn.LocalAddr().String()
-		proxy.Proxy(w, req)
+		r.URL.RawQuery = fmt.Sprintf("h=127.0.0.1&p=%d", remoteServerConn.LocalAddr().(*net.UDPAddr).Port)
+		proxy.Proxy(w, r)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -144,14 +137,16 @@ func TestProxyToHostname(t *testing.T) {
 	}()
 
 	cl := masque.Client{
-		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+		TLSClientConfig: tlsConfig,
+		QUICConfig: &quic.Config{EnableDatagrams: true},
 	}
 	defer cl.Close()
 	proxiedConn, rsp, err := cl.DialAddr(context.Background(), template, "quic-go.net:1234") // the proxy doesn't actually resolve this hostname
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
-	_, err = proxiedConn.WriteTo([]byte("foobar"), nil)
+
+	_, err = proxiedConn.WriteTo([]byte("foobar"), &net.IPAddr{})
 	require.NoError(t, err)
 	b := make([]byte, 1500)
 	n, _, err := proxiedConn.ReadFrom(b)
@@ -173,7 +168,7 @@ func TestProxyingRejected(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{EnableDatagrams: true}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	go func() {
@@ -183,7 +178,8 @@ func TestProxyingRejected(t *testing.T) {
 	}()
 
 	cl := masque.Client{
-		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+		TLSClientConfig: tlsConfig,
+		QUICConfig: &quic.Config{EnableDatagrams: true},
 	}
 	defer cl.Close()
 	_, rsp, err := cl.DialAddr(context.Background(), template, "quic-go.net:1234") // the proxy doesn't actually resolve this hostname
@@ -193,7 +189,8 @@ func TestProxyingRejected(t *testing.T) {
 
 func TestProxyToHostnameMissingPort(t *testing.T) {
 	cl := masque.Client{
-		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+		TLSClientConfig: tlsConfig,
+		QUICConfig: &quic.Config{EnableDatagrams: true},
 	}
 	defer cl.Close()
 	_, rsp, err := cl.DialAddr(
@@ -223,15 +220,9 @@ func TestProxyShutdown(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
+	proxy := masque.Proxy{Template: template, EnableDatagrams: true}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
-		if err != nil {
-			t.Log("Upgrade failed:", err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		proxy.Proxy(w, req)
+		require.NoError(t, proxy.Proxy(w, r))
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -240,7 +231,8 @@ func TestProxyShutdown(t *testing.T) {
 	}()
 
 	cl := masque.Client{
-		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+		TLSClientConfig: tlsConfig,
+		QUICConfig: &quic.Config{EnableDatagrams: true},
 	}
 	defer cl.Close()
 	proxiedConn, rsp, err := cl.Dial(context.Background(), template, remoteServerConn.LocalAddr().(*net.UDPAddr))
