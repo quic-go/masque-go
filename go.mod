@@ -1,6 +1,6 @@
 module github.com/quic-go/masque-go
 
-go 1.23
+go 1.24
 
 require (
 	github.com/dunglas/httpsfv v1.0.2
