@@ -96,9 +96,15 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
 	require.NoError(t, err)
 	b := make([]byte, 1500)
-	n, _, err := proxiedConn.ReadFrom(b)
+	n, raddr, err := proxiedConn.ReadFrom(b)
 	require.NoError(t, err)
 	require.Equal(t, []byte("foobar"), b[:n])
+
+	// Check raddr
+	expected := remoteServerConn.LocalAddr().(*net.UDPAddr)
+	observed := raddr.(*net.UDPAddr)
+	require.True(t, observed.IP.Equal(expected.IP))
+	require.Equal(t, expected.Port, observed.Port)
 }
 
 func TestProxyToHostname(t *testing.T) {
@@ -154,9 +160,15 @@ func TestProxyToHostname(t *testing.T) {
 	_, err = proxiedConn.WriteTo([]byte("foobar"), nil)
 	require.NoError(t, err)
 	b := make([]byte, 1500)
-	n, _, err := proxiedConn.ReadFrom(b)
+	n, raddr, err := proxiedConn.ReadFrom(b)
 	require.NoError(t, err)
 	require.Equal(t, []byte("foobar"), b[:n])
+
+	// Check raddr
+	expected := remoteServerConn.LocalAddr().(*net.UDPAddr)
+	observed := raddr.(*net.UDPAddr)
+	require.True(t, observed.IP.Equal(expected.IP))
+	require.Equal(t, expected.Port, observed.Port)
 }
 
 func TestProxyingRejected(t *testing.T) {
