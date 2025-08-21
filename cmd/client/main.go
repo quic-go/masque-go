@@ -22,7 +22,9 @@ import (
 
 func main() {
 	var proxyURITemplate string
-	flag.StringVar(&proxyURITemplate, "t", "", "URI template")
+	flag.StringVar(&proxyURITemplate, "t", "", "URI template.")
+	var useDatagrams bool
+	flag.BoolVar(&useDatagrams, "datagrams", true, "Use QUIC datagrams to reach the proxy.")
 	flag.Parse()
 	if proxyURITemplate == "" {
 		flag.Usage()
@@ -35,7 +37,7 @@ func main() {
 
 	cl := masque.Client{
 		QUICConfig: &quic.Config{
-			EnableDatagrams:   true,
+			EnableDatagrams:   useDatagrams,
 			InitialPacketSize: 1350,
 		},
 	}

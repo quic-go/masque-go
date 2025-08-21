@@ -5,12 +5,15 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
 
+	"github.com/dunglas/httpsfv"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
@@ -51,7 +54,7 @@ func (c *Client) DialAddr(ctx context.Context, proxyTemplate *uritemplate.Templa
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
-	return c.dial(ctx, str)
+	return c.dial(ctx, str, masqueAddr{target})
 }
 
 // Dial dials a proxied connection to a target server.
@@ -63,10 +66,30 @@ func (c *Client) Dial(ctx context.Context, proxyTemplate *uritemplate.Template, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
-	return c.dial(ctx, str)
+	return c.dial(ctx, str, raddr)
 }
 
-func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketConn, *http.Response, error) {
+type DatagramSender interface {
+	SendDatagram(b []byte) error
+	io.Closer
+}
+
+type DatagramReceiver interface {
+	ReceiveDatagram(ctx context.Context) ([]byte, error)
+	CancelRead(quic.StreamErrorCode)
+}
+
+// DatagramSendReceiver is the common datagram interface of
+// [http3.Stream] and [http3.RequestStream].
+type DatagramSendReceiver interface {
+	DatagramSender
+	DatagramReceiver
+}
+
+var _ DatagramSendReceiver = &http3.Stream{}
+var _ DatagramSendReceiver = &http3.RequestStream{}
+
+func (c *Client) dial(ctx context.Context, expandedTemplate string, raddr net.Addr) (net.PacketConn, *http.Response, error) {
 	u, err := url.Parse(expandedTemplate)
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to parse URI: %w", err)
@@ -80,10 +103,6 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 				InitialPacketSize: defaultInitialPacketSize,
 			}
 		}
-		if !quicConf.EnableDatagrams {
-			c.dialErr = errors.New("masque: QUICConfig needs to enable Datagrams")
-			return
-		}
 		tlsConf := c.TLSClientConfig
 		if tlsConf == nil {
 			tlsConf = &tls.Config{NextProtos: []string{http3.NextProtoH3}}
@@ -94,7 +113,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 			return
 		}
 		c.conn = conn
-		tr := &http3.Transport{EnableDatagrams: true}
+		tr := &http3.Transport{EnableDatagrams: quicConf.EnableDatagrams}
 		c.clientConn = tr.NewClientConn(conn)
 	})
 	if c.dialErr != nil {
@@ -112,7 +131,7 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 		return nil, nil, errors.New("masque: server didn't enable Extended CONNECT")
 	}
 	if !settings.EnableDatagrams {
-		return nil, nil, errors.New("masque: server didn't enable Datagrams")
+		log.Printf("masque: server didn't enable Datagrams")
 	}
 
 	rstr, err := c.clientConn.OpenRequestStream(ctx)
@@ -136,7 +155,58 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string) (net.PacketC
 	if rsp.StatusCode < 200 || rsp.StatusCode > 299 {
 		return nil, rsp, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
-	return newProxiedConn(rstr, c.conn.LocalAddr()), rsp, nil
+
+	if _, udp := raddr.(*net.UDPAddr); !udp {
+		if udpAddr := nextHopAddr(rsp); udpAddr != nil {
+			raddr = udpAddr
+		}
+	}
+	laddr := masqueAddr{c.conn.LocalAddr().String()}
+
+	var dgs DatagramSendReceiver
+	if settings.EnableDatagrams && c.QUICConfig.EnableDatagrams {
+		dgs = rstr // Both sides have opted in to datagrams
+	}
+	return ProxiedPacketConn(dgs, rstr, rsp.Body, laddr, raddr), rsp, nil
+}
+
+// Extract the Proxy-Status next-hop value as a UDPAddr.
+func nextHopAddr(rsp *http.Response) *net.UDPAddr {
+	proxyStatusVals := rsp.Header.Values("Proxy-Status")
+	if len(proxyStatusVals) == 0 {
+		return nil
+	}
+	proxyStatus, err := httpsfv.UnmarshalItem(proxyStatusVals)
+	if err != nil {
+		log.Printf("bad Proxy-Status: %v", err)
+		return nil
+	}
+	nextHop, ok := proxyStatus.Params.Get("next-hop")
+	if !ok {
+		return nil
+	}
+	nextHopStr, ok := nextHop.(string)
+	if !ok {
+		log.Printf("non-string nextHop value")
+		return nil
+	}
+	if nextHopStr == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(nextHopStr)
+	if err != nil {
+		log.Printf("bad next-hop value: %v", err)
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	portNum, err := net.LookupPort("udp", port)
+	if err != nil {
+		log.Printf("bad port: %v", err)
+	}
+	return &net.UDPAddr{IP: ip, Port: portNum}
 }
 
 // Close closes the connection to the proxy.
