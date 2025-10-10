@@ -17,12 +17,12 @@ import (
 	"github.com/quic-go/quic-go/quicvarint"
 )
 
-type masqueAddr struct{ net.Addr }
+type masqueAddr struct{ string }
 
 func (m masqueAddr) Network() string { return "connect-udp" }
-func (m masqueAddr) String() string  { return m.Addr.String() }
+func (m masqueAddr) String() string  { return m.string }
 
-var _ net.Addr = &masqueAddr{}
+var _ net.Addr = masqueAddr{}
 
 type http3Stream interface {
 	io.ReadWriteCloser
@@ -53,11 +53,12 @@ type proxiedConn struct {
 
 var _ net.PacketConn = &proxiedConn{}
 
-func newProxiedConn(str http3Stream, local net.Addr) *proxiedConn {
+func newProxiedConn(str http3Stream, local, remote net.Addr) *proxiedConn {
 	c := &proxiedConn{
-		str:       str,
-		localAddr: local,
-		readDone:  make(chan struct{}),
+		str:        str,
+		localAddr:  local,
+		remoteAddr: remote,
+		readDone:   make(chan struct{}),
 	}
 	c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
 	go func() {
@@ -127,7 +128,11 @@ func (c *proxiedConn) Close() error {
 }
 
 func (c *proxiedConn) LocalAddr() net.Addr {
-	return &masqueAddr{c.localAddr}
+	return c.localAddr
+}
+
+func (c *proxiedConn) RemoteAddr() net.Addr {
+	return c.remoteAddr
 }
 
 func (c *proxiedConn) SetDeadline(t time.Time) error {
