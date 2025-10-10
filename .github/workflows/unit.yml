@@ -31,6 +31,8 @@ jobs:
           files: coverage.txt
           env_vars: OS,GO
           token: ${{ secrets.CODECOV_TOKEN }}
+      - name: echo report.xml
+        run: cat report.xml
       - name: Upload report to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/test-results-action@v1
