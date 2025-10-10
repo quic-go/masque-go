@@ -183,6 +183,7 @@ func nextHopAddr(rsp *http.Response) *net.UDPAddr {
 	portNum, err := net.LookupPort("udp", port)
 	if err != nil {
 		log.Printf("bad port: %v", err)
+		return nil
 	}
 	return &net.UDPAddr{IP: ip, Port: portNum}
 }
