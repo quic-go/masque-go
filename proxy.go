@@ -173,12 +173,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	go func() {
 		defer wg.Done()
 		if err := s.proxyConnReceive(conn, str); err != nil {
-			s.mx.Lock()
-			closed := s.closed
-			s.mx.Unlock()
-			if !closed {
-				log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
-			}
+			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
 	}()
@@ -202,6 +197,9 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return err
 		}
 		contextID, n, err := quicvarint.Parse(data)
@@ -223,6 +221,9 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 	for {
 		n, err := conn.Read(b)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return err
 		}
 		data := make([]byte, 0, len(contextIDZero)+n)
