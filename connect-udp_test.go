@@ -141,7 +141,8 @@ func TestProxyToHostname(t *testing.T) {
 		// In this test, we don't actually want to connect to quic-go.net
 		// Replace the target with the UDP echoer we spun up earlier.
 		req.Target = remoteServerConn.LocalAddr().String()
-		proxy.Proxy(w, req)
+		err = proxy.Proxy(w, req)
+		require.NoError(t, err)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
