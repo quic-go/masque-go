@@ -162,7 +162,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	w.WriteHeader(http.StatusOK)
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		if err := s.proxyConnSend(conn, str); err != nil {
@@ -182,15 +182,12 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 		}
 		str.Close()
 	}()
-	go func() {
-		defer wg.Done()
-		// discard all capsules sent on the request stream
-		if err := skipCapsules(quicvarint.NewReader(str)); err == io.EOF {
-			log.Printf("reading from request stream failed: %v", err)
-		}
-		str.Close()
-		conn.Close()
-	}()
+	// discard all capsules sent on the request stream
+	if err := skipCapsules(quicvarint.NewReader(str)); err == io.EOF {
+		log.Printf("reading from request stream failed: %v", err)
+	}
+	str.Close()
+	conn.Close()
 	wg.Wait()
 	s.mx.Lock()
 	delete(s.closers, entry)
