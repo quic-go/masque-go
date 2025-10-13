@@ -47,7 +47,9 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		p.Proxy(w, req)
+		if err = p.Proxy(w, req); err != nil {
+			t.Error(err)
+		}
 	})
 	server := &http3.Server{
 		Handler:         mux,
