@@ -173,7 +173,12 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	go func() {
 		defer wg.Done()
 		if err := s.proxyConnReceive(conn, str); err != nil {
-			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
+			s.mx.Lock()
+			closed := s.closed
+			s.mx.Unlock()
+			if !closed {
+				log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
+			}
 		}
 		str.Close()
 	}()
