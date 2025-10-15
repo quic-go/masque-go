@@ -18,9 +18,9 @@ import (
 const (
 	uriTemplateTargetHost = "target_host"
 	uriTemplateTargetPort = "target_port"
-
-	maxUdpPayload = 1500
 )
+
+const maxUDPPayloadSize = 1500
 
 var contextIDZero = quicvarint.Append([]byte{}, 0)
 
@@ -214,8 +214,8 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 			// Drop this datagram. We currently only support proxying of UDP payloads.
 			continue
 		}
-		if len(data[n:]) > maxUdpPayload {
-			log.Printf("dropping datagram larger than MTU (%d > %d)", len(data[n:]), maxUdpPayload)
+		if len(data[n:]) > maxUDPPayloadSize {
+			log.Printf("dropping datagram larger than MTU (%d > %d)", len(data[n:]), maxUDPPayloadSize)
 			continue
 		}
 		if _, err := conn.Write(data[n:]); err != nil {
@@ -225,13 +225,13 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 }
 
 func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
-	b := make([]byte, maxUdpPayload+1)
+	b := make([]byte, maxUDPPayloadSize+1)
 	for {
 		n, err := conn.Read(b)
 		if err != nil {
 			return err
 		}
-		if n > maxUdpPayload {
+		if n > maxUDPPayloadSize {
 			log.Printf("dropping UDP packet larger than MTU")
 			continue
 		}
