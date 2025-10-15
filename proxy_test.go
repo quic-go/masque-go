@@ -32,15 +32,6 @@ func newRequest(target string) *http.Request {
 	return req
 }
 
-type http3ResponseWriter struct {
-	http.ResponseWriter
-	str *http3.Stream
-}
-
-var _ http3.HTTPStreamer = &http3ResponseWriter{}
-
-func (s *http3ResponseWriter) HTTPStream() *http3.Stream { return s.str }
-
 func TestProxyCloseProxiedConn(t *testing.T) {
 	clientConn, serverConn := newConnPair(t)
 	serverPort := serverConn.LocalAddr().(*net.UDPAddr).Port
@@ -56,7 +47,9 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		p.Proxy(w, req)
+		if err = p.Proxy(w, req); err != nil {
+			t.Error(err)
+		}
 	})
 	server := &http3.Server{
 		Handler:         mux,
@@ -153,7 +146,7 @@ func TestProxyNXDOMAIN(t *testing.T) {
 }
 
 func TestProxyingAfterClose(t *testing.T) {
-	p := &masque.Proxy{}
+	p := masque.Proxy{}
 	require.NoError(t, p.Close())
 
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
