@@ -224,9 +224,8 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 	b := make([]byte, len(contextIDZero)+maxUDPPayloadSize+1)
 	copy(b, contextIDZero)
-	payloadBuf := b[len(contextIDZero):]
 	for {
-		n, err := conn.Read(payloadBuf)
+		n, err := conn.Read(b[len(contextIDZero):])
 		if err != nil {
 			return err
 		}
@@ -234,8 +233,7 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 			log.Printf("dropping UDP packet larger than MTU")
 			continue
 		}
-		data := b[:len(contextIDZero)+n]
-		if err := str.SendDatagram(data); err != nil {
+		if err := str.SendDatagram(b[:len(contextIDZero)+n]); err != nil {
 			return err
 		}
 	}
