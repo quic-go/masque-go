@@ -201,6 +201,9 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return err
 		}
 		contextID, n, err := quicvarint.Parse(data)
@@ -227,6 +230,9 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 	for {
 		n, err := conn.Read(b[len(contextIDZero):])
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return err
 		}
 		if n > maxUDPPayloadSize {
