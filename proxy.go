@@ -44,6 +44,9 @@ func isCleanShutdownError(err error) bool {
 	if errors.As(err, &opErr) && opErr.Err.Error() == "use of closed network connection" {
 		return true
 	}
+	if errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
 
 	// These errors are expected when the connection is closed.
 	var h3Err *http3.Error
