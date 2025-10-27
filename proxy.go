@@ -187,36 +187,70 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		if err := s.proxyConnSend(conn, str); err != nil && !isCleanShutdownError(err) {
-			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
-		}
-		str.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil && !isCleanShutdownError(err) {
-			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
-		}
-		str.Close()
-	}()
-	// discard all capsules sent on the request stream
-	if err := skipCapsules(quicvarint.NewReader(str)); err != nil && !isCleanShutdownError(err) {
-		log.Printf("reading from request stream failed: %v", err)
-	}
+	forwardUDP(str, str, conn)
 	str.Close()
-	conn.Close()
-	wg.Wait()
+
 	s.mx.Lock()
 	delete(s.closers, entry)
 	s.mx.Unlock()
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
+type DatagramSender interface {
+	SendDatagram(b []byte) error
+	io.Closer
+}
+
+type DatagramReceiver interface {
+	ReceiveDatagram(ctx context.Context) ([]byte, error)
+	CancelRead(quic.StreamErrorCode)
+}
+
+// DatagramSendReceiver is the common datagram interface of
+// [http3.Stream] and [http3.RequestStream].
+type DatagramSendReceiver interface {
+	DatagramSender
+	DatagramReceiver
+}
+
+var _ DatagramSendReceiver = &http3.Stream{}
+var _ DatagramSendReceiver = &http3.RequestStream{}
+
+/*
+ * Forwarding function conventions:
+ * `*To*` functions block until that direction of forwarding is complete.
+ * They return `nil` (not EOF) on clean shutdown.
+ * `str`, `w`, and `r` represent the HTTP side.
+ * `conn` represents the raw UDP or TCP side.
+ */
+
+// `r`, `w`, and `conn` are required.
+// `str` indicates Datagram support if non-nil.
+func forwardUDP(str DatagramSendReceiver, r io.ReadCloser, conn net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := udpToDatagrams(str, conn); err != nil && !isCleanShutdownError(err) {
+			log.Printf("proxying %s to datagrams stopped: %v", conn.RemoteAddr(), err)
+		}
+		r.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		if err := datagramsToUDP(conn, str); err != nil && !isCleanShutdownError(err) {
+			log.Printf("proxying datagrams to %s failed: %v", conn.RemoteAddr(), err)
+		}
+	}()
+	// discard all capsules sent on the request stream
+	if err := skipCapsules(quicvarint.NewReader(r)); err != nil && !isCleanShutdownError(err) {
+		log.Printf("reading from request stream failed: %v", err)
+	}
+	conn.Close()
+	wg.Wait()
+}
+
+func datagramsToUDP(conn io.Writer, str DatagramReceiver) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
@@ -243,7 +277,7 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
+func udpToDatagrams(str DatagramSender, conn io.Reader) error {
 	b := make([]byte, len(contextIDZero)+maxUDPPayloadSize+1)
 	copy(b, contextIDZero)
 	for {
