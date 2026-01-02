@@ -1,6 +1,6 @@
 # masque-go
 
-[![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/masque)
+[![Documentation](https://img.shields.io/badge/docs-quic--go.net-red?style=flat)](https://quic-go.net/docs/connect-udp)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/quic-go/masque-go)](https://pkg.go.dev/github.com/quic-go/masque-go)
 [![Code Coverage](https://img.shields.io/codecov/c/github/quic-go/masque-go/master.svg?style=flat-square)](https://codecov.io/gh/quic-go/masque-go/)
 
