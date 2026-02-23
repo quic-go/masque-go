@@ -31,6 +31,8 @@ type Client struct {
 
 	// QUICConfig is the QUIC config used when dialing the QUIC connection.
 	QUICConfig *quic.Config
+	// Headers can be set to specify additional HTTP headers in the Extended CONNECT
+	Headers http.Header
 
 	dialOnce   sync.Once
 	dialErr    error
@@ -121,11 +123,17 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string, raddr net.Ad
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to open request stream: %w", err)
 	}
+
+	if c.Headers == nil {
+		c.Headers = http.Header{}
+	}
+	c.Headers[http3.CapsuleProtocolHeader] = []string{capsuleProtocolHeaderValue}
+
 	if err := rstr.SendRequestHeader(&http.Request{
 		Method: http.MethodConnect,
 		Proto:  requestProtocol,
 		Host:   u.Host,
-		Header: http.Header{http3.CapsuleProtocolHeader: []string{capsuleProtocolHeaderValue}},
+		Header: c.Headers,
 		URL:    u,
 	}); err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
