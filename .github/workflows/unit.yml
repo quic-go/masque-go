@@ -21,7 +21,7 @@ jobs:
         run: go test -v -cover -coverprofile coverage.txt ./...
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         env:
           OS: ${{ matrix.os }}
           GO: ${{ matrix.go }}
