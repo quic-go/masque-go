@@ -34,6 +34,30 @@ func (e proxyEntry) Close() error {
 	return errors.Join(e.str.Close(), e.conn.Close())
 }
 
+func isCleanShutdownError(err error) bool {
+	// These errors are expected when the proxy is shutting down.
+	var qErr *quic.StreamError
+	if errors.As(err, &qErr) && qErr.ErrorCode == quic.StreamErrorCode(http3.ErrCodeConnectError) && !qErr.Remote {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err.Error() == "use of closed network connection" {
+		return true
+	}
+
+	// These errors are expected when the connection is closed.
+	var h3Err *http3.Error
+	if errors.As(err, &h3Err) && h3Err.ErrorCode == 0x0 && !h3Err.Remote {
+		return true
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(err, &appErr) && appErr.ErrorCode == 0x0 {
+		return true
+	}
+
+	return false
+}
+
 // A Proxy is an RFC 9298 CONNECT-UDP proxy.
 type Proxy struct {
 	mx       sync.Mutex
@@ -167,25 +191,20 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *Request, conn *ne
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnSend(conn, str); err != nil {
+		if err := s.proxyConnSend(conn, str); err != nil && !isCleanShutdownError(err) {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil {
-			s.mx.Lock()
-			closed := s.closed
-			s.mx.Unlock()
-			if !closed {
-				log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
-			}
+		if err := s.proxyConnReceive(conn, str); err != nil && !isCleanShutdownError(err) {
+			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
 	}()
 	// discard all capsules sent on the request stream
-	if err := skipCapsules(quicvarint.NewReader(str)); err == io.EOF {
+	if err := skipCapsules(quicvarint.NewReader(str)); err != nil && !isCleanShutdownError(err) {
 		log.Printf("reading from request stream failed: %v", err)
 	}
 	str.Close()
