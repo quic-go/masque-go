@@ -33,6 +33,9 @@ func (c *ClientConn) dial(req *http.Request, closeConn func() error) (*Conn, *ht
 	if req.URL == nil {
 		return nil, nil, errors.New("masque: request URL is nil")
 	}
+	if req.Host == "" && req.URL.Host == "" {
+		return nil, nil, errors.New("masque: request needs a host")
+	}
 
 	select {
 	case <-req.Context().Done():

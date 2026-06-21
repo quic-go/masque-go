@@ -232,6 +232,14 @@ func TestProxyToHostnameMissingPort(t *testing.T) {
 	require.ErrorContains(t, err, "address quic-go.net: missing port in address")
 }
 
+func TestClientConnDialNoHost(t *testing.T) {
+	req, err := http.NewRequest(http.MethodConnect, "https:///masque?h=quic-go.net&p=1234", nil)
+	require.NoError(t, err)
+
+	_, _, err = new(masque.ClientConn).Dial(req)
+	require.ErrorContains(t, err, "request needs a host")
+}
+
 func TestProxyShutdown(t *testing.T) {
 	remoteServerConn := runEchoServer(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	defer remoteServerConn.Close()
