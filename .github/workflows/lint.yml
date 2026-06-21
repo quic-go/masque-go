@@ -37,7 +37,7 @@ jobs:
         if: success() || failure() # run this step even if the previous one failed
         run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
       - name: Run go fix
-        if: (success() || failure()) && matrix.go == '1.26.x'
+        if: success() || failure() # run this step even if the previous one failed
         run: go fix -diff ./...
       - name: staticcheck
         if: success() || failure() # run this step even if the previous one failed
