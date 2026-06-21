@@ -2,109 +2,41 @@ package masque
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
-	"strconv"
-	"sync"
 
-	"github.com/dunglas/httpsfv"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
-	"github.com/yosida95/uritemplate/v3"
+
+	"github.com/dunglas/httpsfv"
 )
 
-// defaultInitialPacketSize is an increased packet size used for the connection to the proxy.
-// This allows tunneling QUIC connections, which themselves have a minimum MTU requirement of 1200 bytes.
-const defaultInitialPacketSize = 1350
-
-// A Client establishes proxied connections to remote hosts, using a UDP proxy.
-// Multiple flows can be proxied via the same connection to the proxy.
-type Client struct {
-	// TLSClientConfig is the TLS client config used when dialing the QUIC connection to the proxy.
-	// It must set the "h3" ALPN.
-	TLSClientConfig *tls.Config
-
-	// QUICConfig is the QUIC config used when dialing the QUIC connection.
-	QUICConfig *quic.Config
-
-	dialOnce   sync.Once
-	dialErr    error
+// A ClientConn represents a connection to a single proxy server.
+// Multiple proxied connections can be established over a single ClientConn.
+type ClientConn struct {
 	conn       *quic.Conn
 	clientConn *http3.ClientConn
 }
 
-// DialAddr dials a proxied connection to a target server.
-// The target address is sent to the proxy, and the DNS resolution is left to the proxy.
-// The target must be given as a host:port.
-func (c *Client) DialAddr(ctx context.Context, proxyTemplate *uritemplate.Template, target string) (net.PacketConn, *http.Response, error) {
-	host, port, err := net.SplitHostPort(target)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse target: %w", err)
-	}
-	str, err := proxyTemplate.Expand(uritemplate.Values{
-		uriTemplateTargetHost: uritemplate.String(host),
-		uriTemplateTargetPort: uritemplate.String(port),
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
-	}
-	return c.dial(ctx, str, masqueAddr{target})
+// Dial dials a proxied connection to a target server over the proxy connection.
+func (c *ClientConn) Dial(req *http.Request) (*Conn, *http.Response, error) {
+	return c.dial(req, nil)
 }
 
-// Dial dials a proxied connection to a target server.
-func (c *Client) Dial(ctx context.Context, proxyTemplate *uritemplate.Template, raddr *net.UDPAddr) (net.PacketConn, *http.Response, error) {
-	str, err := proxyTemplate.Expand(uritemplate.Values{
-		uriTemplateTargetHost: uritemplate.String(raddr.IP.String()),
-		uriTemplateTargetPort: uritemplate.String(strconv.Itoa(raddr.Port)),
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("masque: failed to expand Template: %w", err)
+func (c *ClientConn) dial(req *http.Request, closeConn func() error) (*Conn, *http.Response, error) {
+	if req == nil {
+		return nil, nil, errors.New("masque: nil request")
 	}
-	return c.dial(ctx, str, raddr)
-}
-
-func (c *Client) dial(ctx context.Context, expandedTemplate string, raddr net.Addr) (net.PacketConn, *http.Response, error) {
-	u, err := url.Parse(expandedTemplate)
-	if err != nil {
-		return nil, nil, fmt.Errorf("masque: failed to parse URI: %w", err)
+	if req.URL == nil {
+		return nil, nil, errors.New("masque: request URL is nil")
 	}
 
-	c.dialOnce.Do(func() {
-		quicConf := c.QUICConfig
-		if quicConf == nil {
-			quicConf = &quic.Config{
-				EnableDatagrams:   true,
-				InitialPacketSize: defaultInitialPacketSize,
-			}
-		}
-		if !quicConf.EnableDatagrams {
-			c.dialErr = errors.New("masque: QUICConfig needs to enable Datagrams")
-			return
-		}
-		tlsConf := c.TLSClientConfig
-		if tlsConf == nil {
-			tlsConf = &tls.Config{NextProtos: []string{http3.NextProtoH3}}
-		}
-		conn, err := quic.DialAddr(ctx, u.Host, tlsConf, quicConf)
-		if err != nil {
-			c.dialErr = fmt.Errorf("masque: dialing QUIC connection failed: %w", err)
-			return
-		}
-		c.conn = conn
-		tr := &http3.Transport{EnableDatagrams: true}
-		c.clientConn = tr.NewClientConn(conn)
-	})
-	if c.dialErr != nil {
-		return nil, nil, c.dialErr
-	}
 	select {
-	case <-ctx.Done():
-		return nil, nil, context.Cause(ctx)
+	case <-req.Context().Done():
+		return nil, nil, context.Cause(req.Context())
 	case <-c.clientConn.Context().Done():
 		return nil, nil, context.Cause(c.clientConn.Context())
 	case <-c.clientConn.ReceivedSettings():
@@ -117,17 +49,11 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string, raddr net.Ad
 		return nil, nil, errors.New("masque: server didn't enable Datagrams")
 	}
 
-	rstr, err := c.clientConn.OpenRequestStream(ctx)
+	rstr, err := c.clientConn.OpenRequestStream(req.Context())
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to open request stream: %w", err)
 	}
-	if err := rstr.SendRequestHeader(&http.Request{
-		Method: http.MethodConnect,
-		Proto:  requestProtocol,
-		Host:   u.Host,
-		Header: http.Header{http3.CapsuleProtocolHeader: []string{capsuleProtocolHeaderValue}},
-		URL:    u,
-	}); err != nil {
+	if err := rstr.SendRequestHeader(req); err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
 	}
 	// TODO: optimistically return the connection
@@ -139,13 +65,14 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string, raddr net.Ad
 		return nil, rsp, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
 
-	if _, udp := raddr.(*net.UDPAddr); !udp {
-		if udpAddr := nextHopAddr(rsp); udpAddr != nil {
-			raddr = udpAddr
-		}
+	var raddr net.Addr
+	if udpAddr := nextHopAddr(rsp); udpAddr != nil {
+		raddr = udpAddr
+	} else {
+		raddr = net.Addr(masqueAddr{req.URL.String()})
 	}
 
-	return newProxiedConn(rstr, masqueAddr{c.conn.LocalAddr().String()}, raddr), rsp, nil
+	return newProxiedConn(rstr, masqueAddr{c.conn.LocalAddr().String()}, raddr, closeConn), rsp, nil
 }
 
 // Extract the Proxy-Status next-hop value as a UDPAddr.
@@ -186,14 +113,4 @@ func nextHopAddr(rsp *http.Response) *net.UDPAddr {
 		return nil
 	}
 	return &net.UDPAddr{IP: ip, Port: portNum}
-}
-
-// Close closes the connection to the proxy.
-// This immediately shuts down all proxied flows.
-func (c *Client) Close() error {
-	c.dialOnce.Do(func() {}) // wait for existing calls to finish
-	if c.conn != nil {
-		return c.conn.CloseWithError(0, "")
-	}
-	return nil
 }
