@@ -273,7 +273,7 @@ func TestProxyShutdown(t *testing.T) {
 	_, _, err = proxiedConn.ReadFrom(b)
 	require.Error(t, err)
 	var errored bool
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if _, err := proxiedConn.WriteTo(b, remoteServerConn.LocalAddr()); err != nil {
 			errored = true
 			break
