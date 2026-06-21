@@ -68,6 +68,8 @@ func (c *ClientConn) dial(req *http.Request, closeConn func() error) (*Conn, *ht
 	var raddr net.Addr
 	if udpAddr := nextHopAddr(rsp); udpAddr != nil {
 		raddr = udpAddr
+	} else if target, ok := req.Context().Value(requestTargetContextKey{}).(string); ok && target != "" {
+		raddr = net.Addr(masqueAddr{target})
 	} else {
 		raddr = net.Addr(masqueAddr{req.URL.String()})
 	}

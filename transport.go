@@ -18,6 +18,8 @@ import (
 // This allows tunneling QUIC connections, which themselves have a minimum MTU requirement of 1200 bytes.
 const defaultInitialPacketSize = 1350
 
+type requestTargetContextKey struct{}
+
 // NewRequest creates a CONNECT-UDP request for the given target.
 // The target must be given as a host:port.
 func NewRequest(ctx context.Context, proxyTemplate *uritemplate.Template, target string) (*http.Request, error) {
@@ -32,6 +34,7 @@ func NewRequest(ctx context.Context, proxyTemplate *uritemplate.Template, target
 	if err != nil {
 		return nil, fmt.Errorf("masque: failed to expand Template: %w", err)
 	}
+	ctx = context.WithValue(ctx, requestTargetContextKey{}, target)
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, str, nil)
 	if err != nil {
 		return nil, fmt.Errorf("masque: failed to create request: %w", err)

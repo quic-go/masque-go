@@ -51,14 +51,16 @@ func setupProxiedConn(t *testing.T) (*http3.Stream, net.PacketConn) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	target := targetConn.LocalAddr().String()
 	req, err := masque.NewRequest(ctx,
 		uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", serverConn.LocalAddr().(*net.UDPAddr).Port)),
-		targetConn.LocalAddr().String(),
+		target,
 	)
 	require.NoError(t, err)
 	conn, rsp, err := tr.Dial(req)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Equal(t, target, conn.RemoteAddr().String())
 	t.Cleanup(func() { conn.Close() })
 
 	var str *http3.Stream
