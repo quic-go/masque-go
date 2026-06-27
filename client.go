@@ -59,7 +59,7 @@ func (c *Client) DialAddr(ctx context.Context, proxyTemplate *uritemplate.Templa
 // Dial dials a proxied connection to a target server.
 func (c *Client) Dial(ctx context.Context, proxyTemplate *uritemplate.Template, raddr *net.UDPAddr) (net.PacketConn, *http.Response, error) {
 	str, err := proxyTemplate.Expand(uritemplate.Values{
-		uriTemplateTargetHost: uritemplate.String(escape(raddr.IP.String())),
+		uriTemplateTargetHost: uritemplate.String(raddr.IP.String()),
 		uriTemplateTargetPort: uritemplate.String(strconv.Itoa(raddr.Port)),
 	})
 	if err != nil {

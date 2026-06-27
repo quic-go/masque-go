@@ -67,7 +67,9 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 	defer server.Close()
 	proxy := masque.Proxy{}
 	defer proxy.Close()
+	rawQueryCh := make(chan string, 1)
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		rawQueryCh <- r.URL.RawQuery
 		req, err := masque.ParseRequest(r, template)
 		if err != nil {
 			t.Log("Upgrade failed:", err)
@@ -92,6 +94,15 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 		remoteServerConn.LocalAddr().(*net.UDPAddr),
 	)
 	require.NoError(t, err)
+
+	rawQuery := <-rawQueryCh
+	// Verify the client encoded target_host per RFC 9298 (single percent-encoding).
+	require.NotContains(t, rawQuery, "%25", "target_host must not be double percent-encoded")
+	if addr.IP.To4() == nil { // IPv6: colons MUST be percent-encoded, e.g. "::1" -> "%3A%3A1"
+		require.Contains(t, rawQuery, "h=%3A%3A1")
+	} else {
+		require.Contains(t, rawQuery, "h="+addr.IP.String())
+	}
 
 	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
 	require.NoError(t, err)
