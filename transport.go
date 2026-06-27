@@ -25,7 +25,7 @@ type requestTargetContextKey struct{}
 func NewRequest(ctx context.Context, proxyTemplate *uritemplate.Template, target string) (*http.Request, error) {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse target: %w", err)
+		return nil, fmt.Errorf("masque: failed to parse target: %w", err)
 	}
 	str, err := proxyTemplate.Expand(uritemplate.Values{
 		uriTemplateTargetHost: uritemplate.String(host),
