@@ -97,7 +97,7 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	}
 
 	match := template.Match(r.URL.String())
-	targetHost := unescape(match.Get(uriTemplateTargetHost).String())
+	targetHost := match.Get(uriTemplateTargetHost).String()
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
 	if targetHost == "" || targetPortStr == "" {
 		return nil, &RequestParseError{
@@ -121,6 +121,3 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 		Host:   r.Host,
 	}, nil
 }
-
-func escape(s string) string   { return strings.ReplaceAll(s, ":", "%3A") }
-func unescape(s string) string { return strings.ReplaceAll(s, "%3A", ":") }
