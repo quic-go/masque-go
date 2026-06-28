@@ -61,7 +61,11 @@ func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: dialing QUIC connection failed: %w", err)
 	}
-	c := t.NewClientConn(conn)
+	c, err := t.NewClientConn(conn)
+	if err != nil {
+		conn.CloseWithError(0, "")
+		return nil, nil, err
+	}
 	pconn, rsp, err := c.dial(req, func() error { return conn.CloseWithError(0, "") })
 	if err != nil {
 		conn.CloseWithError(0, "")
@@ -71,11 +75,15 @@ func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
 }
 
 // NewClientConn creates a client connection for an already established QUIC connection.
+// It returns an error if the QUIC connection didn't negotiate datagram support.
 // The caller owns the QUIC connection and closes it when done.
-func (t *Transport) NewClientConn(conn *quic.Conn) *ClientConn {
+func (t *Transport) NewClientConn(conn *quic.Conn) (*ClientConn, error) {
+	if datagrams := conn.ConnectionState().SupportsDatagrams; !datagrams.Local || !datagrams.Remote {
+		return nil, errors.New("masque: QUIC connection needs Datagram support")
+	}
 	tr := &http3.Transport{EnableDatagrams: true}
 	return &ClientConn{
 		conn:       conn,
 		clientConn: tr.NewClientConn(conn),
-	}
+	}, nil
 }
