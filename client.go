@@ -144,8 +144,8 @@ func (c *Client) dial(ctx context.Context, expandedTemplate string, raddr net.Ad
 			raddr = udpAddr
 		}
 	}
-
-	return newProxiedConn(rstr, masqueAddr{c.conn.LocalAddr().String()}, raddr), rsp, nil
+	laddr := masqueAddr{c.conn.LocalAddr().String()}
+	return ProxiedPacketConn(rstr, rsp.Body, laddr, raddr), rsp, nil
 }
 
 // Extract the Proxy-Status next-hop value as a UDPAddr.
