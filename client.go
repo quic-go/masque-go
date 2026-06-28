@@ -22,27 +22,22 @@ type ClientConn struct {
 }
 
 // Dial dials a proxied connection to a target server over the proxy connection.
-func (c *ClientConn) Dial(req *http.Request) (*Conn, *http.Response, error) {
+func (c *ClientConn) Dial(req *Request) (*Conn, *http.Response, error) {
 	return c.dial(req, nil)
 }
 
-func (c *ClientConn) dial(req *http.Request, closeConn func() error) (*Conn, *http.Response, error) {
-	if req == nil {
-		return nil, nil, errors.New("masque: nil request")
-	}
-	if req.URL == nil {
+func (c *ClientConn) dial(req *Request, closeConn func() error) (*Conn, *http.Response, error) {
+	httpReq := req.req
+	if httpReq.URL == nil {
 		return nil, nil, errors.New("masque: request URL is nil")
 	}
-	if req.Host == "" && req.URL.Host == "" {
+	if httpReq.Host == "" && httpReq.URL.Host == "" {
 		return nil, nil, errors.New("masque: request needs a host")
-	}
-	if c == nil || c.conn == nil || c.clientConn == nil {
-		return nil, nil, errors.New("masque: ClientConn not initialized")
 	}
 
 	select {
-	case <-req.Context().Done():
-		return nil, nil, context.Cause(req.Context())
+	case <-httpReq.Context().Done():
+		return nil, nil, context.Cause(httpReq.Context())
 	case <-c.clientConn.Context().Done():
 		return nil, nil, context.Cause(c.clientConn.Context())
 	case <-c.clientConn.ReceivedSettings():
@@ -55,11 +50,11 @@ func (c *ClientConn) dial(req *http.Request, closeConn func() error) (*Conn, *ht
 		return nil, nil, errors.New("masque: server didn't enable Datagrams")
 	}
 
-	rstr, err := c.clientConn.OpenRequestStream(req.Context())
+	rstr, err := c.clientConn.OpenRequestStream(httpReq.Context())
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to open request stream: %w", err)
 	}
-	if err := rstr.SendRequestHeader(req); err != nil {
+	if err := rstr.SendRequestHeader(httpReq); err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
 	}
 	// TODO: optimistically return the connection
@@ -74,10 +69,8 @@ func (c *ClientConn) dial(req *http.Request, closeConn func() error) (*Conn, *ht
 	var raddr net.Addr
 	if udpAddr := nextHopAddr(rsp); udpAddr != nil {
 		raddr = udpAddr
-	} else if target, ok := req.Context().Value(requestTargetContextKey{}).(string); ok && target != "" {
-		raddr = net.Addr(masqueAddr{target})
 	} else {
-		raddr = net.Addr(masqueAddr{req.URL.String()})
+		raddr = net.Addr(masqueAddr{req.target})
 	}
 
 	return newProxiedConn(rstr, masqueAddr{c.conn.LocalAddr().String()}, raddr, closeConn), rsp, nil

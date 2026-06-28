@@ -5,45 +5,15 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
-
-	"github.com/yosida95/uritemplate/v3"
 )
 
 // defaultInitialPacketSize is an increased packet size used for the connection to the proxy.
 // This allows tunneling QUIC connections, which themselves have a minimum MTU requirement of 1200 bytes.
 const defaultInitialPacketSize = 1350
-
-type requestTargetContextKey struct{}
-
-// NewRequest creates a CONNECT-UDP request for the given target.
-// The target must be given as a host:port.
-func NewRequest(ctx context.Context, proxyTemplate *uritemplate.Template, target string) (*http.Request, error) {
-	host, port, err := net.SplitHostPort(target)
-	if err != nil {
-		return nil, fmt.Errorf("masque: failed to parse target: %w", err)
-	}
-	str, err := proxyTemplate.Expand(uritemplate.Values{
-		uriTemplateTargetHost: uritemplate.String(host),
-		uriTemplateTargetPort: uritemplate.String(port),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("masque: failed to expand Template: %w", err)
-	}
-	ctx = context.WithValue(ctx, requestTargetContextKey{}, target)
-	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, str, nil)
-	if err != nil {
-		return nil, fmt.Errorf("masque: failed to create request: %w", err)
-	}
-	req.Proto = requestProtocol
-	req.Host = req.URL.Host
-	req.Header.Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
-	return req, nil
-}
 
 // A Transport establishes proxied connections to multiple remote hosts.
 type Transport struct {
@@ -63,11 +33,9 @@ type Transport struct {
 // Closing the returned Conn also closes the QUIC connection to the proxy.
 // More advanced use cases, including multiple proxied connections via one proxy connection,
 // should dial a new QUIC connection and use [Transport.NewClientConn].
-func (t *Transport) Dial(req *http.Request) (*Conn, *http.Response, error) {
-	if req == nil {
-		return nil, nil, errors.New("masque: nil request")
-	}
-	if req.URL == nil || req.URL.Host == "" {
+func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
+	httpReq := req.req
+	if httpReq.URL == nil || httpReq.URL.Host == "" {
 		return nil, nil, errors.New("masque: request URL needs a host")
 	}
 
@@ -89,7 +57,7 @@ func (t *Transport) Dial(req *http.Request) (*Conn, *http.Response, error) {
 	if dial == nil {
 		dial = quic.DialAddr
 	}
-	conn, err := dial(req.Context(), req.URL.Host, tlsConf, quicConf)
+	conn, err := dial(httpReq.Context(), httpReq.URL.Host, tlsConf, quicConf)
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: dialing QUIC connection failed: %w", err)
 	}

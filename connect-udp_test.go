@@ -169,7 +169,7 @@ func TestProxyToHostname(t *testing.T) {
 	}
 	req, err := masque.NewRequest(context.Background(), template, "quic-go.net:1234") // the proxy doesn't actually resolve this hostname
 	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer token")
+	req.Header().Set("Authorization", "Bearer token")
 	proxiedConn, rsp, err := tr.Dial(req)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
@@ -232,12 +232,40 @@ func TestProxyToHostnameMissingPort(t *testing.T) {
 	require.ErrorContains(t, err, "address quic-go.net: missing port in address")
 }
 
-func TestClientConnDialNoHost(t *testing.T) {
-	req, err := http.NewRequest(http.MethodConnect, "https:///masque?h=quic-go.net&p=1234", nil)
+func TestDialUsesRequestTargetAsRemoteAddr(t *testing.T) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
+	defer conn.Close()
 
-	_, _, err = new(masque.ClientConn).Dial(req)
-	require.ErrorContains(t, err, "request needs a host")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(http3.CapsuleProtocolHeader, "?1")
+		w.WriteHeader(http.StatusOK)
+	})
+	server := http3.Server{
+		TLSConfig:       tlsConf,
+		QUICConfig:      &quic.Config{EnableDatagrams: true},
+		EnableDatagrams: true,
+		Handler:         mux,
+	}
+	defer server.Close()
+	go func() {
+		if err := server.Serve(conn); err != nil {
+			return
+		}
+	}()
+
+	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", conn.LocalAddr().(*net.UDPAddr).Port))
+	req, err := masque.NewRequest(context.Background(), template, "quic-go.net:1234")
+	require.NoError(t, err)
+	tr := masque.Transport{
+		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+	}
+	proxiedConn, rsp, err := tr.Dial(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	defer proxiedConn.Close()
+	require.Equal(t, "quic-go.net:1234", proxiedConn.RemoteAddr().String())
 }
 
 func TestProxyShutdown(t *testing.T) {

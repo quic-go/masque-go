@@ -15,11 +15,6 @@ import (
 	"github.com/quic-go/quic-go/quicvarint"
 )
 
-const (
-	uriTemplateTargetHost = "target_host"
-	uriTemplateTargetPort = "target_port"
-)
-
 const maxUDPPayloadSize = 1500
 
 var contextIDZero = quicvarint.Append([]byte{}, 0)

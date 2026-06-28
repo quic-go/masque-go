@@ -13,18 +13,6 @@ import (
 	"github.com/yosida95/uritemplate/v3"
 )
 
-const requestProtocol = "connect-udp"
-
-var capsuleProtocolHeaderValue string
-
-func init() {
-	v, err := httpsfv.Marshal(httpsfv.NewItem(true))
-	if err != nil {
-		panic(fmt.Sprintf("failed to marshal capsule protocol header value: %v", err))
-	}
-	capsuleProtocolHeaderValue = v
-}
-
 // ProxyRequest is the parsed CONNECT-UDP request returned from ParseProxyRequest.
 // Target is the target server that the client requests to connect to.
 // It can either be DNS name:port or an IP:port.
