@@ -70,7 +70,7 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 	rawQueryCh := make(chan string, 1)
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		rawQueryCh <- r.URL.RawQuery
-		req, err := masque.ParseRequest(r, template)
+		req, err := masque.ParseProxyRequest(r, template)
 		if err != nil {
 			t.Log("Upgrade failed:", err)
 			w.WriteHeader(http.StatusBadRequest)
@@ -139,7 +139,7 @@ func TestProxyToHostname(t *testing.T) {
 	proxy := masque.Proxy{}
 	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
+		req, err := masque.ParseProxyRequest(r, template)
 		if err != nil {
 			t.Log("Upgrade failed:", err)
 			w.WriteHeader(http.StatusBadRequest)
@@ -250,7 +250,7 @@ func TestProxyShutdown(t *testing.T) {
 	defer server.Close()
 	proxy := masque.Proxy{}
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseRequest(r, template)
+		req, err := masque.ParseProxyRequest(r, template)
 		if err != nil {
 			t.Log("Upgrade failed:", err)
 			w.WriteHeader(http.StatusBadRequest)
