@@ -33,7 +33,7 @@ func main() {
 		log.Fatal("usage: client -t <template> <url>")
 	}
 
-	cl := masque.Client{
+	tr := masque.Transport{
 		QUICConfig: &quic.Config{
 			EnableDatagrams:   true,
 			InitialPacketSize: 1350,
@@ -51,7 +51,11 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				pconn, _, err := cl.Dial(context.Background(), uritemplate.MustNew(proxyURITemplate), raddr)
+				req, err := masque.NewRequest(ctx, uritemplate.MustNew(proxyURITemplate), raddr.String())
+				if err != nil {
+					return nil, err
+				}
+				pconn, _, err := tr.Dial(req)
 				if err != nil {
 					log.Fatal("dialing MASQUE failed:", err)
 				}

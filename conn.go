@@ -36,10 +36,11 @@ var (
 	_ http3Stream = &http3.RequestStream{}
 )
 
-type proxiedConn struct {
+type Conn struct {
 	str        http3Stream
 	localAddr  net.Addr
 	remoteAddr net.Addr
+	closeConn  func() error
 
 	closed   atomic.Bool // set when Close is called
 	readDone chan struct{}
@@ -51,13 +52,16 @@ type proxiedConn struct {
 	readDeadlineTimer *time.Timer
 }
 
-var _ net.PacketConn = &proxiedConn{}
+var _ net.PacketConn = &Conn{}
 
-func newProxiedConn(str http3Stream, local, remote net.Addr) *proxiedConn {
-	c := &proxiedConn{
+// closeConn is only used for QUIC connections dialed by [Transport.Dial].
+// It is nil for connections created through [Transport.NewClientConn]; callers close those QUIC connections themselves.
+func newProxiedConn(str http3Stream, local, remote net.Addr, closeConn func() error) *Conn {
+	c := &Conn{
 		str:        str,
 		localAddr:  local,
 		remoteAddr: remote,
+		closeConn:  closeConn,
 		readDone:   make(chan struct{}),
 	}
 	c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
@@ -71,7 +75,7 @@ func newProxiedConn(str http3Stream, local, remote net.Addr) *proxiedConn {
 	return c
 }
 
-func (c *proxiedConn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
+func (c *Conn) ReadFrom(b []byte) (n int, addr net.Addr, err error) {
 start:
 	c.deadlineMx.Lock()
 	ctx := c.readCtx
@@ -106,14 +110,14 @@ start:
 
 // WriteTo sends a UDP datagram to the target.
 // The net.Addr parameter is ignored.
-func (c *proxiedConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
+func (c *Conn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
 	data := make([]byte, 0, len(contextIDZero)+len(p))
 	data = append(data, contextIDZero...)
 	data = append(data, p...)
 	return len(p), c.str.SendDatagram(data)
 }
 
-func (c *proxiedConn) Close() error {
+func (c *Conn) Close() error {
 	c.closed.Store(true)
 	c.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
 	err := c.str.Close()
@@ -124,23 +128,26 @@ func (c *proxiedConn) Close() error {
 		c.readDeadlineTimer.Stop()
 	}
 	c.deadlineMx.Unlock()
+	if c.closeConn != nil {
+		return errors.Join(err, c.closeConn())
+	}
 	return err
 }
 
-func (c *proxiedConn) LocalAddr() net.Addr {
+func (c *Conn) LocalAddr() net.Addr {
 	return c.localAddr
 }
 
-func (c *proxiedConn) RemoteAddr() net.Addr {
+func (c *Conn) RemoteAddr() net.Addr {
 	return c.remoteAddr
 }
 
-func (c *proxiedConn) SetDeadline(t time.Time) error {
+func (c *Conn) SetDeadline(t time.Time) error {
 	_ = c.SetWriteDeadline(t)
 	return c.SetReadDeadline(t)
 }
 
-func (c *proxiedConn) SetReadDeadline(t time.Time) error {
+func (c *Conn) SetReadDeadline(t time.Time) error {
 	c.deadlineMx.Lock()
 	defer c.deadlineMx.Unlock()
 
@@ -181,7 +188,7 @@ func (c *proxiedConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (c *proxiedConn) SetWriteDeadline(time.Time) error {
+func (c *Conn) SetWriteDeadline(time.Time) error {
 	// TODO(#22): This is currently blocked on a change in quic-go's API.
 	return nil
 }

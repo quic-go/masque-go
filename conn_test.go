@@ -41,24 +41,26 @@ func setupProxiedConn(t *testing.T) (*http3.Stream, net.PacketConn) {
 	serverConn := newUDPConnLocalhost(t)
 	go server.Serve(serverConn)
 
-	cl := masque.Client{
+	tr := masque.Transport{
 		TLSClientConfig: &tls.Config{
 			ClientCAs:          certPool,
 			NextProtos:         []string{http3.NextProtoH3},
 			InsecureSkipVerify: true,
 		},
 	}
-	t.Cleanup(func() { cl.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	conn, rsp, err := cl.Dial(
-		ctx,
+	target := targetConn.LocalAddr().String()
+	req, err := masque.NewRequest(ctx,
 		uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", serverConn.LocalAddr().(*net.UDPAddr).Port)),
-		targetConn.LocalAddr().(*net.UDPAddr),
+		target,
 	)
 	require.NoError(t, err)
+	conn, rsp, err := tr.Dial(req)
+	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Equal(t, target, conn.RemoteAddr().String())
 	t.Cleanup(func() { conn.Close() })
 
 	var str *http3.Stream

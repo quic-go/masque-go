@@ -83,6 +83,10 @@ func newUDPConnLocalhost(t testing.TB) *net.UDPConn {
 }
 
 func newConnPair(t *testing.T) (client, server *quic.Conn) {
+	return newConnPairWithDatagrams(t, true)
+}
+
+func newConnPairWithDatagrams(t *testing.T, enableDatagrams bool) (client, server *quic.Conn) {
 	t.Helper()
 
 	ln, err := quic.ListenEarly(
@@ -91,7 +95,7 @@ func newConnPair(t *testing.T) (client, server *quic.Conn) {
 		&quic.Config{
 			InitialStreamReceiveWindow:     1 << 60,
 			InitialConnectionReceiveWindow: 1 << 60,
-			EnableDatagrams:                true,
+			EnableDatagrams:                enableDatagrams,
 		},
 	)
 	require.NoError(t, err)
@@ -107,10 +111,12 @@ func newConnPair(t *testing.T) (client, server *quic.Conn) {
 			NextProtos: []string{http3.NextProtoH3},
 			RootCAs:    certPool,
 		},
-		&quic.Config{EnableDatagrams: true},
+		&quic.Config{EnableDatagrams: enableDatagrams},
 	)
 	require.NoError(t, err)
-	require.True(t, cl.ConnectionState().SupportsDatagrams.Remote)
+	if enableDatagrams {
+		require.True(t, cl.ConnectionState().SupportsDatagrams.Remote)
+	}
 	t.Cleanup(func() { cl.CloseWithError(0, "") })
 
 	conn, err := ln.Accept(ctx)
@@ -118,7 +124,9 @@ func newConnPair(t *testing.T) (client, server *quic.Conn) {
 	t.Cleanup(func() { conn.CloseWithError(0, "") })
 	select {
 	case <-conn.HandshakeComplete():
-		require.True(t, conn.ConnectionState().SupportsDatagrams.Remote)
+		if enableDatagrams {
+			require.True(t, conn.ConnectionState().SupportsDatagrams.Remote)
+		}
 	case <-ctx.Done():
 		t.Fatal("timeout")
 	}
