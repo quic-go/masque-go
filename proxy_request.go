@@ -25,49 +25,49 @@ func init() {
 	capsuleProtocolHeaderValue = v
 }
 
-// Request is the parsed CONNECT-UDP request returned from ParseRequest.
+// ProxyRequest is the parsed CONNECT-UDP request returned from ParseProxyRequest.
 // Target is the target server that the client requests to connect to.
 // It can either be DNS name:port or an IP:port.
-type Request struct {
+type ProxyRequest struct {
 	Target string
 	Host   string
 }
 
-// RequestParseError is returned from ParseRequest if parsing the CONNECT-UDP request fails.
+// ProxyRequestParseError is returned from ParseProxyRequest if parsing the CONNECT-UDP request fails.
 // It is recommended that the request is rejected with the corresponding HTTP status code.
-type RequestParseError struct {
+type ProxyRequestParseError struct {
 	HTTPStatus int
 	Err        error
 }
 
-func (e *RequestParseError) Error() string { return e.Err.Error() }
-func (e *RequestParseError) Unwrap() error { return e.Err }
+func (e *ProxyRequestParseError) Error() string { return e.Err.Error() }
+func (e *ProxyRequestParseError) Unwrap() error { return e.Err }
 
-// ParseRequest parses a CONNECT-UDP request.
+// ParseProxyRequest parses a CONNECT-UDP request.
 // The template is the URI template that clients will use to configure this UDP proxy.
-func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, error) {
+func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyRequest, error) {
 	u, err := url.Parse(template.Raw())
 	if err != nil {
-		return nil, &RequestParseError{
+		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusInternalServerError,
 			Err:        fmt.Errorf("failed to parse template: %w", err),
 		}
 	}
 
 	if r.Method != http.MethodConnect {
-		return nil, &RequestParseError{
+		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusMethodNotAllowed,
 			Err:        fmt.Errorf("expected CONNECT request, got %s", r.Method),
 		}
 	}
 	if r.Proto != requestProtocol {
-		return nil, &RequestParseError{
+		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusNotImplemented,
 			Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
 		}
 	}
 	if r.Host != u.Host {
-		return nil, &RequestParseError{
+		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusBadRequest,
 			Err:        fmt.Errorf("host in :authority (%s) does not match template host (%s)", r.Host, u.Host),
 		}
@@ -78,18 +78,18 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	if ok {
 		item, err := httpsfv.UnmarshalItem(capsuleHeaderValues)
 		if err != nil {
-			return nil, &RequestParseError{
+			return nil, &ProxyRequestParseError{
 				HTTPStatus: http.StatusBadRequest,
 				Err:        fmt.Errorf("invalid capsule header value: %s", capsuleHeaderValues),
 			}
 		}
 		if v, ok := item.Value.(bool); !ok {
-			return nil, &RequestParseError{
+			return nil, &ProxyRequestParseError{
 				HTTPStatus: http.StatusBadRequest,
 				Err:        fmt.Errorf("incorrect capsule header value type: %s", reflect.TypeOf(item.Value)),
 			}
 		} else if !v {
-			return nil, &RequestParseError{
+			return nil, &ProxyRequestParseError{
 				HTTPStatus: http.StatusBadRequest,
 				Err:        fmt.Errorf("incorrect capsule header value: %t", item.Value),
 			}
@@ -100,7 +100,7 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	targetHost := match.Get(uriTemplateTargetHost).String()
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
 	if targetHost == "" || targetPortStr == "" {
-		return nil, &RequestParseError{
+		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusBadRequest,
 			Err:        fmt.Errorf("expected target_host and target_port"),
 		}
@@ -111,12 +111,12 @@ func ParseRequest(r *http.Request, template *uritemplate.Template) (*Request, er
 	}
 	targetPort, err := strconv.Atoi(targetPortStr)
 	if err != nil {
-		return nil, &RequestParseError{
+		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusBadRequest,
 			Err:        fmt.Errorf("failed to decode target_port: %w", err),
 		}
 	}
-	return &Request{
+	return &ProxyRequest{
 		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
 		Host:   r.Host,
 	}, nil
