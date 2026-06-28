@@ -54,6 +54,14 @@ func (c *ClientConn) dial(req *Request, closeConn func() error) (*Conn, *http.Re
 	if err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to open request stream: %w", err)
 	}
+
+	var keepStream bool
+	defer func() {
+		if !keepStream {
+			rstr.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+			rstr.CancelWrite(quic.StreamErrorCode(http3.ErrCodeNoError))
+		}
+	}()
 	if err := rstr.SendRequestHeader(httpReq); err != nil {
 		return nil, nil, fmt.Errorf("masque: failed to send request: %w", err)
 	}
@@ -73,6 +81,7 @@ func (c *ClientConn) dial(req *Request, closeConn func() error) (*Conn, *http.Re
 		raddr = net.Addr(masqueAddr{req.target})
 	}
 
+	keepStream = true
 	return newProxiedConn(rstr, masqueAddr{c.conn.LocalAddr().String()}, raddr, closeConn), rsp, nil
 }
 
