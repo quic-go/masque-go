@@ -27,7 +27,8 @@ func init() {
 	capsuleProtocolHeaderValue = v
 }
 
-// Request is a CONNECT-UDP request.
+// Request is a CONNECT-UDP request created by NewRequest.
+// The zero value is not valid.
 type Request struct {
 	req    *http.Request
 	target string
