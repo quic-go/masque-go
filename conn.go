@@ -67,7 +67,7 @@ func newProxiedConn(str http3Stream, local, remote net.Addr, closeConn func() er
 	c.readCtx, c.readCtxCancel = context.WithCancel(context.Background())
 	go func() {
 		defer close(c.readDone)
-		if err := skipCapsules(quicvarint.NewReader(str)); err != io.EOF && !c.closed.Load() {
+		if err := skipCapsules(str); err != io.EOF && !c.closed.Load() {
 			log.Printf("reading from request stream failed: %v", err)
 		}
 		str.Close()
@@ -193,14 +193,15 @@ func (c *Conn) SetWriteDeadline(time.Time) error {
 	return nil
 }
 
-func skipCapsules(str quicvarint.Reader) error {
+func skipCapsules(str io.Reader) error {
+	parser := http3.NewCapsuleParser(str)
 	for {
-		ct, r, err := http3.ParseCapsule(str)
+		ct, r, err := parser.Next()
 		if err != nil {
 			return err
 		}
 		log.Printf("skipping capsule of type %d", ct)
-		if _, err := io.Copy(io.Discard, r); err != nil {
+		if err := r.Discard(); err != nil {
 			return err
 		}
 	}
