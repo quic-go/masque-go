@@ -56,8 +56,7 @@ func main() {
 	http.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseProxyRequest(r, template)
 		if err != nil {
-			var perr *masque.ProxyRequestParseError
-			if errors.As(err, &perr) {
+			if perr, ok := errors.AsType[*masque.ProxyRequestParseError](err); ok {
 				w.WriteHeader(perr.HTTPStatus)
 				return
 			}

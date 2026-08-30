@@ -43,8 +43,7 @@ func errToStatus(err error) int {
 		// Consistent with RFC 9209 Section 2.3.1.
 		return http.StatusGatewayTimeout
 	}
-	var dnsError *net.DNSError
-	if errors.As(err, &dnsError) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		// Recommended by RFC 9209 Section 2.3.2.
 		return http.StatusBadGateway
 	}
@@ -104,8 +103,7 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *ProxyRequest) error {
 
 	addr, err := net.ResolveUDPAddr("udp", r.Target)
 	if err != nil {
-		var dnsError *net.DNSError
-		if errors.As(err, &dnsError) {
+		if dnsError, ok := errors.AsType[*net.DNSError](err); ok {
 			dnsErrorToProxyStatus(&proxyStatus, dnsError)
 		}
 		err = writeProxyStatus(err)
