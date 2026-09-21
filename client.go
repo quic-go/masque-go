@@ -17,8 +17,15 @@ import (
 // A ClientConn represents a connection to a single proxy server.
 // Multiple proxied connections can be established over a single ClientConn.
 type ClientConn struct {
-	conn       *quic.Conn
 	clientConn *http3.ClientConn
+}
+
+// NewClientConn creates a client connection using an existing HTTP/3 connection.
+// The HTTP/3 connection and its underlying QUIC connection must have datagrams enabled.
+// The caller owns the HTTP/3 connection and can also use it for ordinary HTTP requests.
+// Closing a [Conn] returned by [ClientConn.Dial] does not close the HTTP/3 connection.
+func NewClientConn(conn *http3.ClientConn) *ClientConn {
+	return &ClientConn{clientConn: conn}
 }
 
 // Dial dials a proxied connection to a target server over the proxy connection.
@@ -82,7 +89,7 @@ func (c *ClientConn) dial(req *Request, closeConn func() error) (*Conn, *http.Re
 	}
 
 	keepStream = true
-	return newProxiedConn(rstr, masqueAddr{c.conn.LocalAddr().String()}, raddr, closeConn), rsp, nil
+	return newProxiedConn(rstr, masqueAddr{c.clientConn.LocalAddr().String()}, raddr, closeConn), rsp, nil
 }
 
 // Extract the Proxy-Status next-hop value as a UDPAddr.
