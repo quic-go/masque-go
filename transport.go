@@ -82,13 +82,11 @@ func (t *Transport) Dial(req *Request) (*Conn, *http.Response, error) {
 // NewClientConn creates a client connection for an already established QUIC connection.
 // It returns an error if the QUIC connection didn't negotiate datagram support.
 // The caller owns the QUIC connection and closes it when done.
+// To reuse an existing HTTP/3 connection, use [NewClientConn].
 func (t *Transport) NewClientConn(conn *quic.Conn) (*ClientConn, error) {
 	if datagrams := conn.ConnectionState().SupportsDatagrams; !datagrams.Local || !datagrams.Remote {
 		return nil, errors.New("masque: QUIC connection needs Datagram support")
 	}
 	tr := &http3.Transport{EnableDatagrams: true}
-	return &ClientConn{
-		conn:       conn,
-		clientConn: tr.NewClientConn(conn),
-	}, nil
+	return NewClientConn(tr.NewClientConn(conn)), nil
 }
