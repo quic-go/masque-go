@@ -24,11 +24,14 @@ func scaleDuration(d time.Duration) time.Duration {
 	return d
 }
 
+// newRequest creates a server-side CONNECT-UDP request.
 func newRequest(target string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	req.Method = http.MethodConnect
 	req.Proto = "connect-udp"
 	req.Header.Add("Capsule-Protocol", "?1")
+	req.URL.Scheme = ""
+	req.URL.Host = ""
 	return req
 }
 
@@ -67,7 +70,10 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	require.NoError(t, err)
 
 	targetConn := newUDPConnLocalhost(t)
-	req := newRequest(fmt.Sprintf("https://localhost:%d/masque?h=localhost&p=%d", serverPort, targetConn.LocalAddr().(*net.UDPAddr).Port))
+	req, err := http.NewRequest(http.MethodConnect, fmt.Sprintf("https://localhost:%d/masque?h=localhost&p=%d", serverPort, targetConn.LocalAddr().(*net.UDPAddr).Port), nil)
+	require.NoError(t, err)
+	req.Proto = "connect-udp"
+	req.Header.Set(http3.CapsuleProtocolHeader, "?1")
 	require.NoError(t, reqStr.SendRequestHeader(req))
 	hdr, err := reqStr.ReadResponse()
 	require.NoError(t, err)

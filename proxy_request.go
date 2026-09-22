@@ -84,7 +84,11 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		}
 	}
 
-	match := template.Match(r.URL.String())
+	// Server requests only populate the path and query in r.URL.
+	reqURL := *r.URL
+	reqURL.Scheme = u.Scheme
+	reqURL.Host = r.Host
+	match := template.Match(reqURL.String())
 	targetHost := match.Get(uriTemplateTargetHost).String()
 	targetPortStr := match.Get(uriTemplateTargetPort).String()
 	if targetHost == "" || targetPortStr == "" {
