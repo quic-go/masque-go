@@ -141,6 +141,9 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, con
 		return net.ErrClosed
 	}
 
+	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
+	w.WriteHeader(http.StatusOK)
+
 	str := w.(http3.HTTPStreamer).HTTPStream()
 	entry := proxyEntry{str: str, conn: conn}
 
@@ -152,9 +155,6 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, con
 	s.refCount.Add(1)
 	defer s.refCount.Done()
 	s.mx.Unlock()
-
-	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
-	w.WriteHeader(http.StatusOK)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
