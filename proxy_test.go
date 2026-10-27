@@ -49,7 +49,6 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
 		if err = p.Proxy(w, req); err != nil {
 			t.Error(err)
 		}
@@ -78,6 +77,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 	hdr, err := reqStr.ReadResponse()
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, hdr.StatusCode)
+	require.Equal(t, "?1", hdr.Header.Get(http3.CapsuleProtocolHeader))
 
 	// Check proxy-status header
 	proxyStatus := hdr.Header.Get("Proxy-Status")

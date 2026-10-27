@@ -30,6 +30,7 @@ func setupProxiedConn(t *testing.T) (*http3.Stream, net.PacketConn) {
 	strChan := make(chan *http3.Stream, 1)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
 		strChan <- w.(http3.HTTPStreamer).HTTPStream()
 	})
 	server := http3.Server{
