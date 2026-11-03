@@ -140,20 +140,33 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, con
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return net.ErrClosed
 	}
+	s.refCount.Add(1)
+	defer s.refCount.Done()
+	s.mx.Unlock()
 
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
 
-	str := w.(http3.HTTPStreamer).HTTPStream()
+	// Sending the response header might block on flow control,
+	// so this must not be done while holding the mutex.
+	str, err := w.(http3.HTTPStreamer).HTTPStream()
+	if err != nil {
+		conn.Close()
+		return err
+	}
 	entry := proxyEntry{str: str, conn: conn}
 
+	s.mx.Lock()
+	// the proxy might have been closed while sending the response header
+	if s.closed {
+		s.mx.Unlock()
+		entry.Close()
+		return net.ErrClosed
+	}
 	if s.closers == nil {
 		s.closers = make(map[io.Closer]struct{})
 	}
 	s.closers[entry] = struct{}{}
-
-	s.refCount.Add(1)
-	defer s.refCount.Done()
 	s.mx.Unlock()
 
 	var wg sync.WaitGroup
