@@ -116,6 +116,78 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 	require.Equal(t, expected.Port, observed.Port)
 }
 
+func TestProxyDropsPacketTooLargeForDatagram(t *testing.T) {
+	// The target answers with a UDP packet that doesn't fit into a single DATAGRAM frame
+	// on the proxy's QUIC connection (packet size limited to 1280 bytes), followed by a small one.
+	// The proxy reads both from the same socket, so it handles the oversized packet first.
+	remoteServerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer remoteServerConn.Close()
+	go func() {
+		b := make([]byte, 1500)
+		_, addr, err := remoteServerConn.ReadFrom(b)
+		if err != nil {
+			return
+		}
+		if _, err := remoteServerConn.WriteTo(make([]byte, 1400), addr); err != nil {
+			return
+		}
+		remoteServerConn.WriteTo([]byte("small"), addr)
+	}()
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer conn.Close()
+	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", conn.LocalAddr().(*net.UDPAddr).Port))
+
+	mux := http.NewServeMux()
+	server := http3.Server{
+		TLSConfig: tlsConf,
+		QUICConfig: &quic.Config{
+			EnableDatagrams:         true,
+			InitialPacketSize:       1280,
+			DisablePathMTUDiscovery: true,
+		},
+		EnableDatagrams: true,
+		Handler:         mux,
+	}
+	defer server.Close()
+	proxy := masque.Proxy{}
+	defer proxy.Close()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseProxyRequest(r, template)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		proxy.Proxy(w, req)
+	})
+	go func() {
+		if err := server.Serve(conn); err != nil {
+			return
+		}
+	}()
+
+	tr := masque.Transport{
+		TLSClientConfig: &tls.Config{ClientCAs: certPool, NextProtos: []string{http3.NextProtoH3}, InsecureSkipVerify: true},
+	}
+	req, err := masque.NewRequest(context.Background(), template, remoteServerConn.LocalAddr().String())
+	require.NoError(t, err)
+	proxiedConn, _, err := tr.Dial(req)
+	require.NoError(t, err)
+	defer proxiedConn.Close()
+
+	_, err = proxiedConn.WriteTo([]byte("foobar"), nil)
+	require.NoError(t, err)
+
+	// The oversized packet is dropped, and the proxied flow must survive it.
+	b := make([]byte, 1500)
+	proxiedConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, _, err := proxiedConn.ReadFrom(b)
+	require.NoError(t, err)
+	require.Equal(t, []byte("small"), b[:n])
+}
+
 func TestProxyToHostname(t *testing.T) {
 	remoteServerConn := runEchoServer(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	defer remoteServerConn.Close()
