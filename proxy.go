@@ -246,6 +246,13 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 			continue
 		}
 		if err := str.SendDatagram(b[:len(contextIDZero)+n]); err != nil {
+			// The packet doesn't fit into a single DATAGRAM frame on this connection.
+			// Drop it, like an oversized packet on the send side, instead of tearing down the whole flow.
+			var tooLargeErr *quic.DatagramTooLargeError
+			if errors.As(err, &tooLargeErr) {
+				log.Printf("dropping UDP packet too large for a DATAGRAM frame (%d bytes)", n)
+				continue
+			}
 			return err
 		}
 	}
