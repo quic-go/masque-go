@@ -117,26 +117,22 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 }
 
 func TestProxyDropsPacketTooLargeForDatagram(t *testing.T) {
-	// The target answers "big" with a UDP packet that doesn't fit into a single DATAGRAM frame
-	// on the proxy's QUIC connection (packet size limited to 1280 bytes), and echoes everything else.
+	// The target answers with a UDP packet that doesn't fit into a single DATAGRAM frame
+	// on the proxy's QUIC connection (packet size limited to 1280 bytes), followed by a small one.
+	// The proxy reads both from the same socket, so it handles the oversized packet first.
 	remoteServerConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
 	defer remoteServerConn.Close()
 	go func() {
-		for {
-			b := make([]byte, 1500)
-			n, addr, err := remoteServerConn.ReadFrom(b)
-			if err != nil {
-				return
-			}
-			if string(b[:n]) == "big" {
-				b = make([]byte, 1400)
-				n = len(b)
-			}
-			if _, err := remoteServerConn.WriteTo(b[:n], addr); err != nil {
-				return
-			}
+		b := make([]byte, 1500)
+		_, addr, err := remoteServerConn.ReadFrom(b)
+		if err != nil {
+			return
 		}
+		if _, err := remoteServerConn.WriteTo(make([]byte, 1400), addr); err != nil {
+			return
+		}
+		remoteServerConn.WriteTo([]byte("small"), addr)
 	}()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -181,16 +177,12 @@ func TestProxyDropsPacketTooLargeForDatagram(t *testing.T) {
 	require.NoError(t, err)
 	defer proxiedConn.Close()
 
-	// The oversized response can't be proxied and is dropped.
-	_, err = proxiedConn.WriteTo([]byte("big"), nil)
+	_, err = proxiedConn.WriteTo([]byte("foobar"), nil)
 	require.NoError(t, err)
-	b := make([]byte, 1500)
-	time.Sleep(200 * time.Millisecond)
 
-	// The proxied flow must survive the dropped packet.
+	// The oversized packet is dropped, and the proxied flow must survive it.
+	b := make([]byte, 1500)
 	proxiedConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, err = proxiedConn.WriteTo([]byte("small"), nil)
-	require.NoError(t, err)
 	n, _, err := proxiedConn.ReadFrom(b)
 	require.NoError(t, err)
 	require.Equal(t, []byte("small"), b[:n])
