@@ -125,11 +125,11 @@ func (s *Proxy) ProxyConnectedSocket(ctx context.Context, w http.ResponseWriter,
 
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
-	str, err := w.(http3.HTTPStreamer).HTTPStream()
-	if err != nil {
+	if err := http.NewResponseController(w).Flush(); err != nil {
 		conn.Close()
 		return err
 	}
+	str := w.(http3.HTTPStreamer).HTTPStream()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
