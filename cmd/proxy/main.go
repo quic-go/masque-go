@@ -63,7 +63,7 @@ func main() {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		proxy.Proxy(r.Context(), w, req)
 	})
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("failed to run proxy: %v", err)
