@@ -66,7 +66,6 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 	}
 	defer server.Close()
 	proxy := masque.Proxy{}
-	defer proxy.Close()
 	rawQueryCh := make(chan string, 1)
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		rawQueryCh <- r.URL.RawQuery
@@ -76,7 +75,7 @@ func testProxyToIP(t *testing.T, addr *net.UDPAddr) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		proxy.Proxy(r.Context(), w, req)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -135,7 +134,6 @@ func TestProxyToHostname(t *testing.T) {
 	}
 	defer server.Close()
 	proxy := masque.Proxy{}
-	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer token" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -154,7 +152,7 @@ func TestProxyToHostname(t *testing.T) {
 		// In this test, we don't actually want to connect to quic-go.net
 		// Replace the target with the UDP echoer we spun up earlier.
 		req.Target = remoteServerConn.LocalAddr().String()
-		if err = proxy.Proxy(w, req); err != nil {
+		if err = proxy.Proxy(r.Context(), w, req); err != nil {
 			t.Error(err)
 		}
 	})
@@ -203,8 +201,6 @@ func TestProxyingRejected(t *testing.T) {
 		Handler:         mux,
 	}
 	defer server.Close()
-	proxy := masque.Proxy{}
-	defer proxy.Close()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -287,6 +283,8 @@ func TestProxyShutdown(t *testing.T) {
 	}
 	defer server.Close()
 	proxy := masque.Proxy{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseProxyRequest(r, template)
 		if err != nil {
@@ -294,7 +292,7 @@ func TestProxyShutdown(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		proxy.Proxy(ctx, w, req)
 	})
 	go func() {
 		if err := server.Serve(conn); err != nil {
@@ -319,8 +317,8 @@ func TestProxyShutdown(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []byte("foobar"), b[:n])
 
-	// Close the server and expect the proxied connection to unblock ReadFrom and WriteTo.
-	proxy.Close()
+	// Cancel the context and expect the proxied connection to unblock ReadFrom and WriteTo.
+	cancel()
 	_, _, err = proxiedConn.ReadFrom(b)
 	require.Error(t, err)
 	var errored bool

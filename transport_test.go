@@ -49,7 +49,6 @@ func TestNewClientConnSharesHTTP3Connection(t *testing.T) {
 	defer targetConn.Close()
 
 	proxy := &masque.Proxy{}
-	defer proxy.Close()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		req, err := masque.ParseProxyRequest(r, template)
@@ -58,7 +57,7 @@ func TestNewClientConnSharesHTTP3Connection(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := proxy.Proxy(w, req); err != nil {
+		if err := proxy.Proxy(r.Context(), w, req); err != nil {
 			t.Error(err)
 		}
 	})

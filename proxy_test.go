@@ -49,7 +49,7 @@ func TestProxyCloseProxiedConn(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err = p.Proxy(w, req); err != nil {
+		if err = p.Proxy(r.Context(), w, req); err != nil {
 			t.Error(err)
 		}
 	})
@@ -121,7 +121,7 @@ func TestProxyBadPort(t *testing.T) {
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, p.Proxy(rec, req), "invalid port")
+	require.ErrorContains(t, p.Proxy(context.Background(), rec, req), "invalid port")
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	proxyStatus := rec.Header().Get("Proxy-Status")
@@ -139,7 +139,7 @@ func TestProxyNXDOMAIN(t *testing.T) {
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()
 
-	require.ErrorContains(t, p.Proxy(rec, req), "no such host")
+	require.ErrorContains(t, p.Proxy(context.Background(), rec, req), "no such host")
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 
 	proxyStatus := rec.Header().Get("Proxy-Status")
@@ -151,9 +151,10 @@ func TestProxyNXDOMAIN(t *testing.T) {
 	require.Contains(t, proxyStatus, "no such host")
 }
 
-func TestProxyingAfterClose(t *testing.T) {
+func TestProxyingCanceledContext(t *testing.T) {
 	p := masque.Proxy{}
-	require.NoError(t, p.Close())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	r := newRequest("https://localhost:1234/masque?h=localhost&p=1234")
 	req, err := masque.ParseProxyRequest(r, uritemplate.MustNew("https://localhost:1234/masque?h={target_host}&p={target_port}"))
@@ -161,7 +162,7 @@ func TestProxyingAfterClose(t *testing.T) {
 
 	t.Run("proxying", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		require.ErrorIs(t, p.Proxy(rec, req), net.ErrClosed)
+		require.ErrorIs(t, p.Proxy(ctx, rec, req), context.Canceled)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	})
 
@@ -169,7 +170,7 @@ func TestProxyingAfterClose(t *testing.T) {
 		rec := httptest.NewRecorder()
 		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 		require.NoError(t, err)
-		require.ErrorIs(t, p.ProxyConnectedSocket(rec, req, conn), net.ErrClosed)
+		require.ErrorIs(t, p.ProxyConnectedSocket(ctx, rec, req, conn), context.Canceled)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	})
 }

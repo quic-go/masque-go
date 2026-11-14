@@ -19,23 +19,8 @@ const maxUDPPayloadSize = 1500
 
 var contextIDZero = quicvarint.Append([]byte{}, 0)
 
-type proxyEntry struct {
-	str  *http3.Stream
-	conn *net.UDPConn
-}
-
-func (e proxyEntry) Close() error {
-	e.str.CancelRead(quic.StreamErrorCode(http3.ErrCodeConnectError))
-	return errors.Join(e.str.Close(), e.conn.Close())
-}
-
 // A Proxy is an RFC 9298 CONNECT-UDP proxy.
-type Proxy struct {
-	mx       sync.Mutex
-	closed   bool
-	refCount sync.WaitGroup // counter for the Go routines spawned in Upgrade
-	closers  map[io.Closer]struct{}
-}
+type Proxy struct{}
 
 func errToStatus(err error) int {
 	var netErr net.Error
@@ -77,14 +62,12 @@ func dnsErrorToProxyStatus(proxyStatus *httpsfv.Item, dnsError *net.DNSError) {
 // For more control over the UDP socket, use ProxyConnectedSocket.
 // Applications may add custom header fields to the response header,
 // but MUST NOT call WriteHeader on the http.ResponseWriter.
-func (s *Proxy) Proxy(w http.ResponseWriter, r *ProxyRequest) error {
-	s.mx.Lock()
-	if s.closed {
-		s.mx.Unlock()
+// It returns when the client closes the request stream, or when the context is canceled.
+func (s *Proxy) Proxy(ctx context.Context, w http.ResponseWriter, r *ProxyRequest) error {
+	if err := context.Cause(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		return net.ErrClosed
+		return err
 	}
-	s.mx.Unlock()
 
 	proxyStatus := httpsfv.NewItem(r.Host)
 	// Adds the proxy status to the header.  Returns
@@ -125,68 +108,44 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *ProxyRequest) error {
 		w.WriteHeader(errToStatus(err))
 		return err
 	}
-	return s.ProxyConnectedSocket(w, r, conn)
+	return s.ProxyConnectedSocket(ctx, w, r, conn)
 }
 
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
 // Applications may add custom header fields such as Proxy-Status
 // to the response header, but MUST NOT call WriteHeader on the
 // http.ResponseWriter. It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, conn *net.UDPConn) error {
-	s.mx.Lock()
-	if s.closed {
-		s.mx.Unlock()
+// It returns when the client closes the request stream, or when the context is canceled.
+func (s *Proxy) ProxyConnectedSocket(ctx context.Context, w http.ResponseWriter, _ *ProxyRequest, conn *net.UDPConn) error {
+	if err := context.Cause(ctx); err != nil {
 		conn.Close()
 		w.WriteHeader(http.StatusServiceUnavailable)
-		return net.ErrClosed
+		return err
 	}
-	s.refCount.Add(1)
-	defer s.refCount.Done()
-	s.mx.Unlock()
 
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 	w.WriteHeader(http.StatusOK)
-
-	// Sending the response header might block on flow control,
-	// so this must not be done while holding the mutex.
 	str, err := w.(http3.HTTPStreamer).HTTPStream()
 	if err != nil {
 		conn.Close()
 		return err
 	}
-	entry := proxyEntry{str: str, conn: conn}
-
-	s.mx.Lock()
-	// the proxy might have been closed while sending the response header
-	if s.closed {
-		s.mx.Unlock()
-		entry.Close()
-		return net.ErrClosed
-	}
-	if s.closers == nil {
-		s.closers = make(map[io.Closer]struct{})
-	}
-	s.closers[entry] = struct{}{}
-	s.mx.Unlock()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnSend(conn, str); err != nil {
+		if err := s.proxyConnSend(ctx, conn, str); err != nil {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
+		// unblocks skipCapsules
+		str.CancelRead(quic.StreamErrorCode(http3.ErrCodeConnectError))
 		str.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil {
-			s.mx.Lock()
-			closed := s.closed
-			s.mx.Unlock()
-			if !closed {
-				log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
-			}
+		if err := s.proxyConnReceive(conn, str); err != nil && ctx.Err() == nil {
+			log.Printf("proxying receive side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
 	}()
@@ -197,15 +156,12 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, con
 	str.Close()
 	conn.Close()
 	wg.Wait()
-	s.mx.Lock()
-	delete(s.closers, entry)
-	s.mx.Unlock()
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
+func (s *Proxy) proxyConnSend(ctx context.Context, conn *net.UDPConn, str *http3.Stream) error {
 	for {
-		data, err := str.ReceiveDatagram(context.Background())
+		data, err := str.ReceiveDatagram(ctx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -249,19 +205,4 @@ func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
 			return err
 		}
 	}
-}
-
-// Close closes the proxy, immediately terminating all proxied flows.
-func (s *Proxy) Close() error {
-	s.mx.Lock()
-	s.closed = true
-	var errs []error
-	for closer := range s.closers {
-		errs = append(errs, closer.Close())
-	}
-	s.mx.Unlock()
-
-	s.refCount.Wait()
-	s.closers = nil
-	return errors.Join(errs...)
 }
