@@ -31,12 +31,11 @@ func setupProxiedConn(t *testing.T) (*http3.Stream, net.PacketConn) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		str, err := w.(http3.HTTPStreamer).HTTPStream()
-		if err != nil {
+		if err := http.NewResponseController(w).Flush(); err != nil {
 			t.Error(err)
 			return
 		}
-		strChan <- str
+		strChan <- w.(http3.HTTPStreamer).HTTPStream()
 	})
 	server := http3.Server{
 		TLSConfig:       tlsConf,
