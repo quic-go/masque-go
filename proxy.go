@@ -1,12 +1,15 @@
 package masque
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"sync"
 
 	"github.com/dunglas/httpsfv"
@@ -128,11 +131,92 @@ func (s *Proxy) Proxy(w http.ResponseWriter, r *ProxyRequest) error {
 	return s.ProxyConnectedSocket(w, r, conn)
 }
 
+func writeResponseWithHijacker(headers http.Header, httpConn net.Conn, buf *bufio.ReadWriter, protocol string) error {
+	statusCode := http.StatusSwitchingProtocols
+	if buf.Reader.Buffered() > 0 {
+		statusCode = http.StatusBadRequest
+		if proxyStatusVals := headers.Values("Proxy-Status"); len(proxyStatusVals) > 0 {
+			proxyStatus, err := httpsfv.UnmarshalItem(proxyStatusVals)
+			if err != nil {
+				return fmt.Errorf("encountered invalid Proxy-Status: %w", err)
+			}
+			proxyStatus.Params.Add("error", "proxy_internal_response")
+			proxyStatus.Params.Add("detail",
+				fmt.Sprintf("client sent %d bytes of optimistic data, not allowed in HTTP/1.1", buf.Reader.Buffered()))
+			newProxyStatusVal, err := httpsfv.Marshal(proxyStatus)
+			if err != nil {
+				return fmt.Errorf("couldn't serialize Proxy-Status: %w", err)
+			}
+			headers.Set("Proxy-Status", newProxyStatusVal)
+		}
+	}
+
+	rsp := http.Response{
+		StatusCode:    statusCode,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		ContentLength: -1,
+		Header:        headers,
+	}
+	if statusCode == http.StatusSwitchingProtocols {
+		rsp.Header.Set("Connection", "Upgrade")
+		if rsp.Header.Get("Upgrade") == "" {
+			rsp.Header.Set("Upgrade", protocol)
+		}
+	}
+	rspBytes, err := httputil.DumpResponse(&rsp, false)
+	if err != nil {
+		return err
+	}
+	if _, err := httpConn.Write(rspBytes); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Proxy) proxyH1(w http.ResponseWriter, conn *net.UDPConn) error {
+	h1Conn, buf, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	defer h1Conn.Close()
+
+	upgradeProtocol := requestProtocol
+	if reqUpgrade := w.Header().Get("Upgrade"); reqUpgrade != "" {
+		upgradeProtocol = reqUpgrade
+	}
+	if err := writeResponseWithHijacker(w.Header(), h1Conn, buf, upgradeProtocol); err != nil {
+		conn.Close()
+		return err
+	}
+
+	s.mx.Lock()
+	// the proxy might have been closed while sending the response header
+	if s.closed {
+		s.mx.Unlock()
+		conn.Close()
+		return net.ErrClosed
+	}
+	if s.closers == nil {
+		s.closers = make(map[io.Closer]struct{})
+	}
+	s.closers[h1Conn] = struct{}{}
+	s.mx.Unlock()
+
+	forwardUDP(nil, h1Conn, h1Conn, conn)
+
+	s.mx.Lock()
+	delete(s.closers, h1Conn)
+	s.mx.Unlock()
+	return nil
+}
+
 // ProxyConnectedSocket proxies a request on a connected UDP socket.
 // Applications may add custom header fields such as Proxy-Status
 // to the response header, but MUST NOT call WriteHeader on the
 // http.ResponseWriter. It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, conn *net.UDPConn) error {
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *ProxyRequest, conn *net.UDPConn) error {
 	s.mx.Lock()
 	if s.closed {
 		s.mx.Unlock()
@@ -145,6 +229,16 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, con
 	s.mx.Unlock()
 
 	w.Header().Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
+
+	if r != nil && r.ProtoMajor == 1 {
+		return s.proxyH1(w, conn)
+	}
+	if r != nil && r.ProtoMajor != 0 && r.ProtoMajor != 3 {
+		conn.Close()
+		w.WriteHeader(http.StatusNotImplemented)
+		return fmt.Errorf("masque: unsupported HTTP version: %d", r.ProtoMajor)
+	}
+
 	w.WriteHeader(http.StatusOK)
 
 	// Sending the response header might block on flow control,
@@ -173,14 +267,14 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, con
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnSend(conn, str); err != nil {
+		if err := proxyConnSend(conn, str); err != nil {
 			log.Printf("proxying send side to %s failed: %v", conn.RemoteAddr(), err)
 		}
 		str.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		if err := s.proxyConnReceive(conn, str); err != nil {
+		if err := proxyConnReceive(conn, str); err != nil {
 			s.mx.Lock()
 			closed := s.closed
 			s.mx.Unlock()
@@ -203,7 +297,7 @@ func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, _ *ProxyRequest, con
 	return nil
 }
 
-func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
+func proxyConnSend(conn io.Writer, str DatagramReceiver) error {
 	for {
 		data, err := str.ReceiveDatagram(context.Background())
 		if err != nil {
@@ -230,7 +324,7 @@ func (s *Proxy) proxyConnSend(conn *net.UDPConn, str *http3.Stream) error {
 	}
 }
 
-func (s *Proxy) proxyConnReceive(conn *net.UDPConn, str *http3.Stream) error {
+func proxyConnReceive(conn io.Reader, str DatagramSender) error {
 	b := make([]byte, len(contextIDZero)+maxUDPPayloadSize+1)
 	copy(b, contextIDZero)
 	for {

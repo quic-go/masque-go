@@ -16,9 +16,12 @@ import (
 // ProxyRequest is the parsed CONNECT-UDP request returned from ParseProxyRequest.
 // Target is the target server that the client requests to connect to.
 // It can either be DNS name:port or an IP:port.
+// ProtoMajor is the HTTP major version of the request (1 for HTTP/1.1, 3 for HTTP/3).
+// A zero value defaults to HTTP/3 for backwards compatibility.
 type ProxyRequest struct {
-	Target string
-	Host   string
+	Target     string
+	Host       string
+	ProtoMajor int
 }
 
 // ProxyRequestParseError is returned from ParseProxyRequest if parsing the CONNECT-UDP request fails.
@@ -42,16 +45,42 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		}
 	}
 
-	if r.Method != http.MethodConnect {
-		return nil, &ProxyRequestParseError{
-			HTTPStatus: http.StatusMethodNotAllowed,
-			Err:        fmt.Errorf("expected CONNECT request, got %s", r.Method),
+	switch r.ProtoMajor {
+	case 1:
+		if r.Method != http.MethodGet {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusMethodNotAllowed,
+				Err:        fmt.Errorf("expected GET request in HTTP/1.1, got %s", r.Method),
+			}
 		}
-	}
-	if r.Proto != requestProtocol {
+		if upgrade := r.Header.Get("Upgrade"); !strings.EqualFold(upgrade, requestProtocol) {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusNotImplemented,
+				Err:        fmt.Errorf("unexpected protocol: %s", upgrade),
+			}
+		}
+	case 3:
+		if r.Method != http.MethodConnect {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusMethodNotAllowed,
+				Err:        fmt.Errorf("expected CONNECT request, got %s", r.Method),
+			}
+		}
+		if r.Proto != requestProtocol {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusNotImplemented,
+				Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
+			}
+		}
+	case 2:
 		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusNotImplemented,
-			Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
+			Err:        fmt.Errorf("HTTP/2 is not supported"),
+		}
+	default:
+		return nil, &ProxyRequestParseError{
+			HTTPStatus: http.StatusNotImplemented,
+			Err:        fmt.Errorf("unexpected HTTP version: %d", r.ProtoMajor),
 		}
 	}
 	if r.Host != u.Host {
@@ -109,7 +138,8 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		}
 	}
 	return &ProxyRequest{
-		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
-		Host:   r.Host,
+		Target:     fmt.Sprintf("%s:%d", targetHost, targetPort),
+		Host:       r.Host,
+		ProtoMajor: r.ProtoMajor,
 	}, nil
 }

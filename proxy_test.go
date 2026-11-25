@@ -27,6 +27,7 @@ func scaleDuration(d time.Duration) time.Duration {
 // newRequest creates a server-side CONNECT-UDP request.
 func newRequest(target string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.ProtoMajor = 3
 	req.Method = http.MethodConnect
 	req.Proto = "connect-udp"
 	req.Header.Add("Capsule-Protocol", "?1")
