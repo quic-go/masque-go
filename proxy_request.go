@@ -47,16 +47,28 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 
 	switch r.ProtoMajor {
 	case 1:
+		if r.ProtoMinor != 1 {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusHTTPVersionNotSupported,
+				Err:        fmt.Errorf("expected HTTP/1.1, got HTTP/%d.%d", r.ProtoMajor, r.ProtoMinor),
+			}
+		}
 		if r.Method != http.MethodGet {
 			return nil, &ProxyRequestParseError{
 				HTTPStatus: http.StatusMethodNotAllowed,
 				Err:        fmt.Errorf("expected GET request in HTTP/1.1, got %s", r.Method),
 			}
 		}
-		if upgrade := r.Header.Get("Upgrade"); !strings.EqualFold(upgrade, requestProtocol) {
+		if !hasHeaderToken(r.Header, "Connection", "Upgrade") {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        fmt.Errorf("expected Connection: Upgrade header in HTTP/1.1"),
+			}
+		}
+		if !hasHeaderToken(r.Header, "Upgrade", requestProtocol) {
 			return nil, &ProxyRequestParseError{
 				HTTPStatus: http.StatusNotImplemented,
-				Err:        fmt.Errorf("unexpected protocol: %s", upgrade),
+				Err:        fmt.Errorf("unexpected protocol: %s", r.Header.Get("Upgrade")),
 			}
 		}
 	case 3:
@@ -81,6 +93,14 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusNotImplemented,
 			Err:        fmt.Errorf("unexpected HTTP version: %d", r.ProtoMajor),
+		}
+	}
+	if len(r.Header.Values("Content-Type")) > 0 ||
+		len(r.Header.Values("Content-Length")) > 0 || r.ContentLength > 0 ||
+		len(r.TransferEncoding) > 0 || len(r.Header.Values("Transfer-Encoding")) > 0 {
+		return nil, &ProxyRequestParseError{
+			HTTPStatus: http.StatusBadRequest,
+			Err:        fmt.Errorf("Capsule Protocol messages must not contain Content-Length, Content-Type, or Transfer-Encoding"),
 		}
 	}
 	if r.Host != u.Host {
@@ -142,4 +162,15 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		Host:       r.Host,
 		ProtoMajor: r.ProtoMajor,
 	}, nil
+}
+
+func hasHeaderToken(h http.Header, key, token string) bool {
+	for _, v := range h.Values(key) {
+		for _, part := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }

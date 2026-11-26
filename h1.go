@@ -6,12 +6,29 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go/http3"
 )
+
+type sharedCloser struct {
+	once sync.Once
+	err  error
+	c    io.Closer
+}
+
+func (s *sharedCloser) Close() error {
+	s.once.Do(func() {
+		s.err = s.c.Close()
+	})
+	return s.err
+}
 
 // An H1ClientConn represents an HTTP/1.1 connection to a single proxy server.
 // It is used when an established connection (e.g. from custom dialing or a TLS
@@ -28,37 +45,98 @@ func NewH1ClientConn(conn net.Conn) *H1ClientConn {
 // Dial dials a proxied UDP connection over the existing HTTP/1.1 connection.
 // Custom headers (such as Authorization or Upgrade overrides) can be set directly on req.Header().
 func (c *H1ClientConn) Dial(req *Request) (net.PacketConn, *http.Response, error) {
-	httpReq := req.req
-	if httpReq == nil || httpReq.URL == nil {
+	if c == nil || c.conn == nil {
+		return nil, nil, errors.New("masque: connection is nil")
+	}
+	if req == nil || req.req == nil || req.req.URL == nil {
 		return nil, nil, errors.New("masque: request URL is nil")
 	}
+	httpReq := req.req
 
-	h1Req := httpReq.Clone(httpReq.Context())
+	ctx := httpReq.Context()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	if d, ok := ctx.Deadline(); ok {
+		if err := c.conn.SetDeadline(d); err != nil {
+			return nil, nil, fmt.Errorf("masque: failed to set connection deadline: %w", err)
+		}
+	}
+
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.conn.SetDeadline(time.Now())
+	})
+	defer stop()
+
+	h1Req := httpReq.Clone(ctx)
 	h1Req.Method = http.MethodGet
 	if h1Req.Header == nil {
 		h1Req.Header = make(http.Header)
 	}
 	h1Req.Header.Set("Connection", "Upgrade")
-	if h1Req.Header.Get("Upgrade") == "" {
-		h1Req.Header.Set("Upgrade", requestProtocol)
+	upgradeProto := h1Req.Header.Get("Upgrade")
+	// Allow users to override the upgrade header in case they are experimenting with different
+	// proxy implementations.
+	if upgradeProto == "" {
+		upgradeProto = requestProtocol
+		h1Req.Header.Set("Upgrade", upgradeProto)
 	}
 	h1Req.Header.Set(http3.CapsuleProtocolHeader, capsuleProtocolHeaderValue)
 
 	if err := h1Req.Write(c.conn); err != nil {
+		stop()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, fmt.Errorf("masque: failed to write HTTP/1.1 request: %w", ctxErr)
+		}
 		return nil, nil, fmt.Errorf("masque: failed to write HTTP/1.1 request: %w", err)
 	}
 
-	rsp, err := http.ReadResponse(bufio.NewReader(c.conn), h1Req)
+	br := bufio.NewReader(c.conn)
+	rsp, err := http.ReadResponse(br, h1Req)
 	if err != nil {
+		stop()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, fmt.Errorf("masque: failed to read HTTP/1.1 response: %w", ctxErr)
+		}
 		return nil, nil, fmt.Errorf("masque: failed to read HTTP/1.1 response: %w", err)
 	}
+
+	if !stop() {
+		return nil, nil, ctx.Err()
+	}
+	_ = c.conn.SetDeadline(time.Time{})
 
 	if rsp.StatusCode != http.StatusSwitchingProtocols {
 		return nil, rsp, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
+	if !hasHeaderToken(rsp.Header, "Connection", "Upgrade") {
+		_ = c.conn.Close()
+		return nil, rsp, errors.New("masque: server response missing Connection: Upgrade header")
+	}
+	upgradeVals := rsp.Header.Values("Upgrade")
+	if len(upgradeVals) != 1 || !strings.EqualFold(strings.TrimSpace(upgradeVals[0]), upgradeProto) {
+		_ = c.conn.Close()
+		return nil, rsp, fmt.Errorf("masque: unexpected Upgrade header in response: %v", upgradeVals)
+	}
+	if len(rsp.Header.Values("Content-Type")) > 0 ||
+		len(rsp.Header.Values("Content-Length")) > 0 || rsp.ContentLength > 0 ||
+		len(rsp.TransferEncoding) > 0 || len(rsp.Header.Values("Transfer-Encoding")) > 0 {
+		_ = c.conn.Close()
+		return nil, rsp, errors.New("masque: server 101 response contains forbidden content/transfer header")
+	}
 
 	laddr := masqueAddr{c.conn.LocalAddr().String()}
-	return ProxiedPacketConn(nil, c.conn, c.conn, laddr, remoteAddr(rsp, req.target)), rsp, nil
+	closer := &sharedCloser{c: c.conn}
+	reqWriter := struct {
+		io.Writer
+		io.Closer
+	}{c.conn, closer}
+	rspReader := struct {
+		*bufio.Reader
+		io.Closer
+	}{br, closer}
+	return ProxiedPacketConn(nil, reqWriter, rspReader, laddr, remoteAddr(rsp, req.target)), rsp, nil
 }
 
 func (c *H1ClientConn) Close() error {
@@ -90,12 +168,12 @@ func (t *H1Transport) dial(ctx context.Context, u *url.URL) (net.Conn, error) {
 	switch u.Scheme {
 	case "http":
 		if u.Port() == "" {
-			authority = authority + ":80"
+			authority = net.JoinHostPort(u.Hostname(), "80")
 		}
 		return dialer(ctx, "tcp", authority)
 	case "https":
 		if u.Port() == "" {
-			authority = authority + ":443"
+			authority = net.JoinHostPort(u.Hostname(), "443")
 		}
 		if t.DialTLSContext != nil {
 			return t.DialTLSContext(ctx, "tcp", authority)
@@ -106,11 +184,18 @@ func (t *H1Transport) dial(ctx context.Context, u *url.URL) (net.Conn, error) {
 		}
 		tlsConf := t.TLSClientConfig
 		if tlsConf == nil {
-			tlsConf = &tls.Config{}
-		}
-		if tlsConf.ServerName == "" {
+			tlsConf = &tls.Config{
+				ServerName: u.Hostname(),
+				NextProtos: []string{"http/1.1"},
+			}
+		} else if tlsConf.ServerName == "" || len(tlsConf.NextProtos) == 0 {
 			c := tlsConf.Clone()
-			c.ServerName = u.Hostname()
+			if c.ServerName == "" {
+				c.ServerName = u.Hostname()
+			}
+			if len(c.NextProtos) == 0 {
+				c.NextProtos = []string{"http/1.1"}
+			}
 			tlsConf = c
 		}
 		tlsClient := tls.Client(rawConn, tlsConf)
@@ -126,8 +211,8 @@ func (t *H1Transport) dial(ctx context.Context, u *url.URL) (net.Conn, error) {
 
 // Dial dials an HTTP/1.1 connection to the proxy and establishes a proxied UDP connection.
 func (t *H1Transport) Dial(req *Request) (net.PacketConn, *http.Response, error) {
-	if req.req == nil || req.req.URL == nil {
-		return nil, nil, errors.New("masque: request URL is nil")
+	if req == nil || req.req == nil || req.req.URL == nil || req.req.URL.Host == "" {
+		return nil, nil, errors.New("masque: request URL needs a host")
 	}
 	conn, err := t.dial(req.req.Context(), req.req.URL)
 	if err != nil {

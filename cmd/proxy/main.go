@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/quic-go/masque-go"
 
@@ -26,6 +27,10 @@ func main() {
 	flag.Parse()
 
 	if templateStr == "" || bind == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
+	if (certFile == "") != (keyFile == "") {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -79,14 +84,16 @@ func main() {
 			if err := h3server.ListenAndServe(); err != nil {
 				log.Fatalf("failed to run proxy in h3: %v", err)
 			}
-			h3server.Close()
 		}()
 	} else {
 		log.Println("no certificate provided, disabling HTTP/3")
 	}
 
 	h1server := http.Server{
-		Addr: bind,
+		Addr:              bind,
+		ReadHeaderTimeout: 10 * time.Second,
+		// Disable HTTP/2 so TLS clients negotiate HTTP/1.1.
+		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 	}
 	if len(certFile) > 0 {
 		if err := h1server.ListenAndServeTLS(certFile, keyFile); err != nil {
@@ -97,5 +104,4 @@ func main() {
 			log.Fatalf("failed to run plaintext proxy in HTTP/1.1: %v", err)
 		}
 	}
-	h1server.Close()
 }

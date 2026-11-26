@@ -1,12 +1,15 @@
 package masque_test
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/quic-go/masque-go"
 	"github.com/stretchr/testify/require"
@@ -53,7 +56,6 @@ func TestH1(t *testing.T) {
 	proxiedConn, rsp, err := tr.Dial(req)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusSwitchingProtocols, rsp.StatusCode)
-	defer proxiedConn.Close()
 
 	_, err = proxiedConn.WriteTo([]byte("foobar"), remoteServerConn.LocalAddr())
 	require.NoError(t, err)
@@ -66,6 +68,8 @@ func TestH1(t *testing.T) {
 	observed := raddr.(*net.UDPAddr)
 	require.True(t, observed.IP.Equal(expected.IP))
 	require.Equal(t, expected.Port, observed.Port)
+
+	require.NoError(t, proxiedConn.Close())
 }
 
 func TestH1ClientConnWithPreDialedConnAndCustomHeaders(t *testing.T) {
@@ -124,7 +128,6 @@ func TestH1ClientConnWithPreDialedConnAndCustomHeaders(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusSwitchingProtocols, rsp.StatusCode)
 	require.Equal(t, "connect-udp-custom", rsp.Header.Get("Upgrade"))
-	defer proxiedConn.Close()
 
 	_, err = proxiedConn.WriteTo([]byte("test-payload"), nil)
 	require.NoError(t, err)
@@ -132,6 +135,8 @@ func TestH1ClientConnWithPreDialedConnAndCustomHeaders(t *testing.T) {
 	n, _, err := proxiedConn.ReadFrom(buf)
 	require.NoError(t, err)
 	require.Equal(t, []byte("test-payload"), buf[:n])
+
+	require.NoError(t, proxiedConn.Close())
 }
 
 func TestH1CapsuleTransport(t *testing.T) {
@@ -166,8 +171,48 @@ func TestProxyRequestProtocolCaseSensitivity(t *testing.T) {
 		req.Proto = "HTTP/1.1"
 		req.ProtoMajor = 1
 		req.ProtoMinor = 1
+		req.Header.Set("Connection", "Upgrade")
 		req.Header.Set("Upgrade", "Connect-UDP")
 		r, err := masque.ParseProxyRequest(req, template)
+		require.NoError(t, err)
+		require.Equal(t, "localhost:1337", r.Target)
+	})
+
+	t.Run("HTTP/1.1 requires Connection: Upgrade token", func(t *testing.T) {
+		newH1Req := func() *http.Request {
+			req := newRequest("https://localhost:1234/masque?h=localhost&p=1337")
+			req.Method = http.MethodGet
+			req.Proto = "HTTP/1.1"
+			req.ProtoMajor = 1
+			req.ProtoMinor = 1
+			req.Header.Set("Upgrade", "connect-udp")
+			return req
+		}
+
+		// Missing Connection header
+		_, err := masque.ParseProxyRequest(newH1Req(), template)
+		require.EqualError(t, err, "expected Connection: Upgrade header in HTTP/1.1")
+		require.Equal(t, http.StatusBadRequest, err.(*masque.ProxyRequestParseError).HTTPStatus)
+
+		// Connection header without Upgrade token
+		req := newH1Req()
+		req.Header.Set("Connection", "keep-alive, upgraded")
+		_, err = masque.ParseProxyRequest(req, template)
+		require.EqualError(t, err, "expected Connection: Upgrade header in HTTP/1.1")
+		require.Equal(t, http.StatusBadRequest, err.(*masque.ProxyRequestParseError).HTTPStatus)
+
+		// Comma-separated case-insensitive token
+		req = newH1Req()
+		req.Header.Set("Connection", "keep-alive, upgrade")
+		r, err := masque.ParseProxyRequest(req, template)
+		require.NoError(t, err)
+		require.Equal(t, "localhost:1337", r.Target)
+
+		// Multiple Connection header lines
+		req = newH1Req()
+		req.Header.Add("Connection", "keep-alive")
+		req.Header.Add("Connection", "UPGRADE")
+		r, err = masque.ParseProxyRequest(req, template)
 		require.NoError(t, err)
 		require.Equal(t, "localhost:1337", r.Target)
 	})
@@ -178,5 +223,509 @@ func TestProxyRequestProtocolCaseSensitivity(t *testing.T) {
 		_, err := masque.ParseProxyRequest(req, template)
 		require.EqualError(t, err, "unexpected protocol: Connect-UDP")
 		require.Equal(t, http.StatusNotImplemented, err.(*masque.ProxyRequestParseError).HTTPStatus)
+	})
+
+	t.Run("HTTP/1.0 is rejected", func(t *testing.T) {
+		req := newRequest("https://localhost:1234/masque?h=localhost&p=1337")
+		req.Method = http.MethodGet
+		req.Proto = "HTTP/1.0"
+		req.ProtoMajor = 1
+		req.ProtoMinor = 0
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "connect-udp")
+		_, err := masque.ParseProxyRequest(req, template)
+		require.Equal(t, http.StatusHTTPVersionNotSupported, err.(*masque.ProxyRequestParseError).HTTPStatus)
+	})
+
+	t.Run("HTTP/1.1 multi-token Upgrade header", func(t *testing.T) {
+		req := newRequest("https://localhost:1234/masque?h=localhost&p=1337")
+		req.Method = http.MethodGet
+		req.Proto = "HTTP/1.1"
+		req.ProtoMajor = 1
+		req.ProtoMinor = 1
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "h2c, connect-udp")
+		r, err := masque.ParseProxyRequest(req, template)
+		require.NoError(t, err)
+		require.Equal(t, "localhost:1337", r.Target)
+	})
+
+	t.Run("forbidden Capsule Protocol headers", func(t *testing.T) {
+		for _, hdr := range []struct {
+			key, val string
+		}{
+			{"Content-Length", "0"},
+			{"Content-Type", "text/plain"},
+			{"Transfer-Encoding", "chunked"},
+		} {
+			req := newRequest("https://localhost:1234/masque?h=localhost&p=1337")
+			req.Method = http.MethodGet
+			req.Proto = "HTTP/1.1"
+			req.ProtoMajor = 1
+			req.ProtoMinor = 1
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "connect-udp")
+			req.Header.Set(hdr.key, hdr.val)
+			_, err := masque.ParseProxyRequest(req, template)
+			require.Error(t, err, hdr.key)
+			require.Equal(t, http.StatusBadRequest, err.(*masque.ProxyRequestParseError).HTTPStatus)
+		}
+	})
+}
+
+func TestH1ClientConnBufferedFirstCapsule(t *testing.T) {
+	clientRaw, serverRaw := net.Pipe()
+	defer serverRaw.Close()
+
+	template := uritemplate.MustNew("http://localhost:8080/masque?h={target_host}&p={target_port}")
+
+	go func() {
+		defer serverRaw.Close()
+		_, err := http.ReadRequest(bufio.NewReader(serverRaw))
+		if err != nil {
+			return
+		}
+		// Send the 101 response and the first DATAGRAM capsule in a single Write
+		// so http.ReadResponse's bufio.Reader buffers the capsule bytes.
+		respAndCapsule := append(
+			[]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n"),
+			0x00, 6, 0x00, 'h', 'e', 'l', 'l', 'o',
+		)
+		_, _ = serverRaw.Write(respAndCapsule)
+	}()
+
+	clientConn := masque.NewH1ClientConn(clientRaw)
+	defer clientConn.Close()
+
+	req, err := masque.NewRequest(context.Background(), template, "127.0.0.1:1234")
+	require.NoError(t, err)
+
+	pconn, rsp, err := clientConn.Dial(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, rsp.StatusCode)
+	defer pconn.Close()
+
+	require.NoError(t, pconn.SetReadDeadline(time.Now().Add(time.Second)))
+	buf := make([]byte, 1500)
+	n, _, err := pconn.ReadFrom(buf)
+	require.NoError(t, err)
+	require.Equal(t, []byte("hello"), buf[:n])
+}
+
+func TestH1TransportDialContextCancellation(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer listener.Close()
+
+	reqReceived := make(chan struct{})
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(conn))
+		close(reqReceived)
+		<-done
+	}()
+
+	template := uritemplate.MustNew(fmt.Sprintf("http://localhost:%d/masque?h={target_host}&p={target_port}", listener.Addr().(*net.TCPAddr).Port))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := masque.NewRequest(ctx, template, "127.0.0.1:1234")
+	require.NoError(t, err)
+
+	errCh := make(chan error, 1)
+	go func() {
+		tr := masque.H1Transport{}
+		_, _, err := tr.Dial(req)
+		errCh <- err
+	}()
+
+	<-reqReceived
+	cancel()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("H1Transport.Dial did not return promptly after context cancellation")
+	}
+}
+
+func TestH1TransportDialContextCancelAfterSuccess(t *testing.T) {
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+	remoteServerConn := runEchoServer(t, addr)
+	defer remoteServerConn.Close()
+
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer listener.Close()
+
+	template := uritemplate.MustNew(fmt.Sprintf("http://localhost:%d/masque?h={target_host}&p={target_port}", listener.Addr().(*net.TCPAddr).Port))
+	proxy := masque.Proxy{}
+	defer proxy.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseProxyRequest(r, template)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = proxy.Proxy(w, req)
+	})
+	server := http.Server{Handler: mux}
+	defer server.Close()
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	req, err := masque.NewRequest(ctx, template, remoteServerConn.LocalAddr().String())
+	require.NoError(t, err)
+
+	tr := masque.H1Transport{}
+	pconn, rsp, err := tr.Dial(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, rsp.StatusCode)
+	defer pconn.Close()
+
+	// Cancelling the dial context after Dial returns must not affect the PacketConn.
+	cancel()
+
+	_, err = pconn.WriteTo([]byte("after-cancel"), remoteServerConn.LocalAddr())
+	require.NoError(t, err)
+	buf := make([]byte, 1500)
+	n, _, err := pconn.ReadFrom(buf)
+	require.NoError(t, err)
+	require.Equal(t, []byte("after-cancel"), buf[:n])
+}
+
+func TestH1RejectsOptimisticDatagrams(t *testing.T) {
+	targetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer targetConn.Close()
+
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer listener.Close()
+
+	template := uritemplate.MustNew(fmt.Sprintf("http://localhost:%d/masque?h={target_host}&p={target_port}", listener.Addr().(*net.TCPAddr).Port))
+	proxy := masque.Proxy{}
+	defer proxy.Close()
+
+	proxyErrCh := make(chan error, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseProxyRequest(r, template)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		proxyErrCh <- proxy.Proxy(w, req)
+	})
+	server := http.Server{Handler: mux}
+	defer server.Close()
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	tcpConn, err := net.Dial("tcp", listener.Addr().String())
+	require.NoError(t, err)
+	defer tcpConn.Close()
+
+	targetAddr := targetConn.LocalAddr().(*net.UDPAddr)
+	reqStr := fmt.Sprintf(
+		"GET /masque?h=%s&p=%d HTTP/1.1\r\nHost: localhost:%d\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n",
+		targetAddr.IP.String(), targetAddr.Port, listener.Addr().(*net.TCPAddr).Port,
+	)
+	// Send the upgrade request and an optimistic DATAGRAM capsule in a single Write
+	// so the server's bufio.Reader buffers the optimistic datagram.
+	payload := append([]byte(reqStr), 0x00, 10, 0x00, 'o', 'p', 't', 'i', 'm', 'i', 's', 't', '!')
+	_, err = tcpConn.Write(payload)
+	require.NoError(t, err)
+
+	rsp, err := http.ReadResponse(bufio.NewReader(tcpConn), nil)
+	require.NoError(t, err)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	require.Empty(t, rsp.Header.Get("Capsule-Protocol"))
+	require.Contains(t, rsp.Header.Get("Proxy-Status"), "details=")
+	require.Contains(t, rsp.Header.Get("Proxy-Status"), "optimistic data")
+
+	select {
+	case err := <-proxyErrCh:
+		require.ErrorContains(t, err, "client sent optimistic data")
+	case <-time.After(time.Second):
+		t.Fatal("expected proxy.Proxy to return an error")
+	}
+
+	// Ensure the optimistic datagram was never forwarded to the UDP target.
+	require.NoError(t, targetConn.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+	buf := make([]byte, 1500)
+	_, _, err = targetConn.ReadFromUDP(buf)
+	var netErr net.Error
+	require.ErrorAs(t, err, &netErr)
+	require.True(t, netErr.Timeout())
+}
+
+func TestH1ClientConnRejectsInvalidUpgradeResponse(t *testing.T) {
+	template := uritemplate.MustNew("http://localhost:8080/masque?h={target_host}&p={target_port}")
+
+	tests := []struct {
+		name       string
+		reqUpgrade string
+		rawResp    string
+		wantErr    string
+	}{
+		{
+			name:    "wrong Upgrade protocol",
+			rawResp: "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+			wantErr: "unexpected Upgrade header",
+		},
+		{
+			name:    "missing Connection Upgrade",
+			rawResp: "HTTP/1.1 101 Switching Protocols\r\nUpgrade: connect-udp\r\n\r\n",
+			wantErr: "missing Connection: Upgrade",
+		},
+		{
+			name:    "multiple Upgrade headers",
+			rawResp: "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nUpgrade: websocket\r\n\r\n",
+			wantErr: "unexpected Upgrade header",
+		},
+		{
+			name:       "custom Upgrade mismatch",
+			reqUpgrade: "connect-udp-custom",
+			rawResp:    "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\n\r\n",
+			wantErr:    "unexpected Upgrade header",
+		},
+		{
+			name:    "forbidden Content-Length",
+			rawResp: "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nContent-Length: 0\r\n\r\n",
+			wantErr: "forbidden content/transfer header",
+		},
+		{
+			name:    "forbidden Content-Type",
+			rawResp: "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nContent-Type: text/plain\r\n\r\n",
+			wantErr: "forbidden content/transfer header",
+		},
+		{
+			name:    "forbidden Transfer-Encoding",
+			rawResp: "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nTransfer-Encoding: chunked\r\n\r\n",
+			wantErr: "forbidden content/transfer header",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clientRaw, serverRaw := net.Pipe()
+			defer serverRaw.Close()
+
+			go func() {
+				defer serverRaw.Close()
+				_, err := http.ReadRequest(bufio.NewReader(serverRaw))
+				if err != nil {
+					return
+				}
+				_, _ = serverRaw.Write([]byte(tc.rawResp))
+			}()
+
+			clientConn := masque.NewH1ClientConn(clientRaw)
+			defer clientConn.Close()
+
+			req, err := masque.NewRequest(context.Background(), template, "127.0.0.1:1234")
+			require.NoError(t, err)
+			if tc.reqUpgrade != "" {
+				req.Header().Set("Upgrade", tc.reqUpgrade)
+			}
+
+			pconn, rsp, err := clientConn.Dial(req)
+			require.ErrorContains(t, err, tc.wantErr)
+			require.Nil(t, pconn)
+			require.NotNil(t, rsp)
+			require.Equal(t, http.StatusSwitchingProtocols, rsp.StatusCode)
+
+			// RFC 9298 Section 3.3: client MUST abort the connection on invalid 101 response.
+			_, readErr := serverRaw.Read(make([]byte, 1))
+			require.Error(t, readErr)
+		})
+	}
+}
+
+func TestH1RejectsOptimisticDatagramsWithoutProxyStatus(t *testing.T) {
+	targetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer targetConn.Close()
+
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer listener.Close()
+
+	template := uritemplate.MustNew(fmt.Sprintf("http://localhost:%d/masque?h={target_host}&p={target_port}", listener.Addr().(*net.TCPAddr).Port))
+	proxy := masque.Proxy{}
+	defer proxy.Close()
+
+	proxyErrCh := make(chan error, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseProxyRequest(r, template)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		udpConn, err := net.DialUDP("udp", nil, targetConn.LocalAddr().(*net.UDPAddr))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		proxyErrCh <- proxy.ProxyConnectedSocket(w, req, udpConn)
+	})
+	server := http.Server{Handler: mux}
+	defer server.Close()
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	tcpConn, err := net.Dial("tcp", listener.Addr().String())
+	require.NoError(t, err)
+	defer tcpConn.Close()
+
+	targetAddr := targetConn.LocalAddr().(*net.UDPAddr)
+	reqStr := fmt.Sprintf(
+		"GET /masque?h=%s&p=%d HTTP/1.1\r\nHost: localhost:%d\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n",
+		targetAddr.IP.String(), targetAddr.Port, listener.Addr().(*net.TCPAddr).Port,
+	)
+	payload := append([]byte(reqStr), 0x00, 10, 0x00, 'o', 'p', 't', 'i', 'm', 'i', 's', 't', '!')
+	_, err = tcpConn.Write(payload)
+	require.NoError(t, err)
+
+	rsp, err := http.ReadResponse(bufio.NewReader(tcpConn), nil)
+	require.NoError(t, err)
+	defer rsp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
+	require.Empty(t, rsp.Header.Get("Capsule-Protocol"))
+
+	select {
+	case err := <-proxyErrCh:
+		require.ErrorContains(t, err, "client sent optimistic data")
+	case <-time.After(time.Second):
+		t.Fatal("expected proxy.ProxyConnectedSocket to return an error")
+	}
+}
+
+func TestH1ProxyClose(t *testing.T) {
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+	remoteServerConn := runEchoServer(t, addr)
+	defer remoteServerConn.Close()
+
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer listener.Close()
+
+	template := uritemplate.MustNew(fmt.Sprintf("http://localhost:%d/masque?h={target_host}&p={target_port}", listener.Addr().(*net.TCPAddr).Port))
+	proxy := masque.Proxy{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseProxyRequest(r, template)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = proxy.Proxy(w, req)
+	})
+	server := http.Server{Handler: mux}
+	defer server.Close()
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	tr := masque.H1Transport{}
+	req, err := masque.NewRequest(context.Background(), template, remoteServerConn.LocalAddr().String())
+	require.NoError(t, err)
+
+	pconn, _, err := tr.Dial(req)
+	require.NoError(t, err)
+	defer pconn.Close()
+
+	require.NoError(t, proxy.Close())
+
+	_, _, err = pconn.ReadFrom(make([]byte, 1500))
+	require.Error(t, err)
+}
+
+func TestH1TLS(t *testing.T) {
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+	remoteServerConn := runEchoServer(t, addr)
+	defer remoteServerConn.Close()
+
+	serverTLSConf := tlsConf.Clone()
+	serverTLSConf.NextProtos = []string{"http/1.1"}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", serverTLSConf)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	template := uritemplate.MustNew(fmt.Sprintf("https://localhost:%d/masque?h={target_host}&p={target_port}", port))
+
+	proxy := masque.Proxy{}
+	defer proxy.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
+		req, err := masque.ParseProxyRequest(r, template)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Verify middleware-added Content-Type is stripped on 101 responses.
+		w.Header().Set("Content-Type", "text/plain")
+		if err := proxy.Proxy(w, req); err != nil {
+			t.Error(err)
+		}
+	})
+	server := http.Server{
+		Handler:      mux,
+		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
+	}
+	defer server.Close()
+	go func() {
+		_ = server.Serve(listener)
+	}()
+
+	t.Run("with RootCAs and empty ServerName/NextProtos", func(t *testing.T) {
+		tr := masque.H1Transport{
+			TLSClientConfig: &tls.Config{RootCAs: certPool},
+		}
+		req, err := masque.NewRequest(context.Background(), template, remoteServerConn.LocalAddr().String())
+		require.NoError(t, err)
+
+		pconn, rsp, err := tr.Dial(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusSwitchingProtocols, rsp.StatusCode)
+		require.Empty(t, rsp.Header.Get("Content-Type"))
+
+		_, err = pconn.WriteTo([]byte("tls-hello"), remoteServerConn.LocalAddr())
+		require.NoError(t, err)
+		buf := make([]byte, 1500)
+		n, _, err := pconn.ReadFrom(buf)
+		require.NoError(t, err)
+		require.Equal(t, []byte("tls-hello"), buf[:n])
+		require.NoError(t, pconn.Close())
+	})
+
+	t.Run("nil TLSClientConfig sets ServerName", func(t *testing.T) {
+		tr := masque.H1Transport{}
+		req, err := masque.NewRequest(context.Background(), template, remoteServerConn.LocalAddr().String())
+		require.NoError(t, err)
+
+		// Fails certificate verification (self-signed test CA), NOT missing ServerName.
+		_, _, err = tr.Dial(req)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "ServerName")
 	})
 }

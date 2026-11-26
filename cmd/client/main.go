@@ -25,8 +25,6 @@ func main() {
 	flag.StringVar(&proxyURITemplate, "t", "", "URI template.")
 	var useQuic bool
 	flag.BoolVar(&useQuic, "quic", true, "Use QUIC to reach the proxy.")
-	var useDatagrams bool
-	flag.BoolVar(&useDatagrams, "datagrams", true, "Use QUIC datagrams to reach the proxy.")
 	var insecureTLS bool
 	flag.BoolVar(&insecureTLS, "insecure-tls", false, "Ignore TLS certificate errors from the proxy.")
 	flag.Parse()
@@ -49,7 +47,7 @@ func main() {
 	if useQuic {
 		tr := &masque.Transport{
 			QUICConfig: &quic.Config{
-				EnableDatagrams:   useDatagrams,
+				EnableDatagrams:   true,
 				InitialPacketSize: 1350,
 			},
 			TLSClientConfig: &tls.Config{

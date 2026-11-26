@@ -14,7 +14,6 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
-	"github.com/quic-go/quic-go/quicvarint"
 )
 
 type masqueAddr struct{ string }
@@ -95,17 +94,15 @@ start:
 		}
 		return 0, nil, os.ErrDeadlineExceeded
 	}
-	contextID, n, err := quicvarint.Parse(data)
-	if err != nil {
+	dgram := &bytesDatagramReader{b: data}
+	if _, ok, err := readUDPDatagramHeader(dgram, 0); err != nil {
 		return 0, nil, fmt.Errorf("masque: malformed datagram: %w", err)
-	}
-	if contextID != 0 {
-		// Drop this datagram. We currently only support proxying of UDP payloads.
+	} else if !ok {
 		goto start
 	}
 	// If b is too small, additional bytes are discarded.
 	// This mirrors the behavior of large UDP datagrams received on a UDP socket (on Linux).
-	return copy(b, data[n:]), c.remoteAddr, nil
+	return copy(b, dgram.b), c.remoteAddr, nil
 }
 
 // WriteTo sends a UDP datagram to the target.
