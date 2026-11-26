@@ -2,6 +2,7 @@ package masque_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -345,13 +346,21 @@ func TestH1TransportDialContextCancellation(t *testing.T) {
 		errCh <- err
 	}()
 
-	<-reqReceived
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-reqReceived:
+	case err := <-errCh:
+		t.Fatalf("H1Transport.Dial failed before request was received: %v", err)
+	case <-timer.C:
+		t.Fatal("timed out waiting for server to receive request")
+	}
 	cancel()
 
 	select {
 	case err := <-errCh:
 		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(2 * time.Second):
+	case <-timer.C:
 		t.Fatal("H1Transport.Dial did not return promptly after context cancellation")
 	}
 }
@@ -405,51 +414,68 @@ func TestH1TransportDialContextCancelAfterSuccess(t *testing.T) {
 	require.Equal(t, []byte("after-cancel"), buf[:n])
 }
 
+type hijackResponseWriter struct {
+	header   http.Header
+	conn     net.Conn
+	rw       *bufio.ReadWriter
+	hijacked bool
+}
+
+func newHijackResponseWriter(conn net.Conn, buffered []byte) *hijackResponseWriter {
+	br := bufio.NewReader(bytes.NewReader(buffered))
+	// Pre-fill bufio.Reader so br.Buffered() deterministically equals len(buffered).
+	_, _ = br.Peek(1)
+	return &hijackResponseWriter{
+		header: make(http.Header),
+		conn:   conn,
+		rw:     bufio.NewReadWriter(br, bufio.NewWriter(conn)),
+	}
+}
+
+func (h *hijackResponseWriter) Header() http.Header         { return h.header }
+func (h *hijackResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (h *hijackResponseWriter) WriteHeader(int)             {}
+func (h *hijackResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	return h.conn, h.rw, nil
+}
+
 func TestH1RejectsOptimisticDatagrams(t *testing.T) {
 	targetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
 	defer targetConn.Close()
 
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	targetAddr := targetConn.LocalAddr().(*net.UDPAddr)
+	template := uritemplate.MustNew("http://localhost:8080/masque?h={target_host}&p={target_port}")
+	httpReq, err := http.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("http://localhost:8080/masque?h=%s&p=%d", targetAddr.IP.String(), targetAddr.Port),
+		nil,
+	)
 	require.NoError(t, err)
-	defer listener.Close()
+	httpReq.Header.Set("Connection", "Upgrade")
+	httpReq.Header.Set("Upgrade", "connect-udp")
+	httpReq.Header.Set("Capsule-Protocol", "?1")
 
-	template := uritemplate.MustNew(fmt.Sprintf("http://localhost:%d/masque?h={target_host}&p={target_port}", listener.Addr().(*net.TCPAddr).Port))
+	req, err := masque.ParseProxyRequest(httpReq, template)
+	require.NoError(t, err)
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	optimisticCapsule := []byte{0x00, 10, 0x00, 'o', 'p', 't', 'i', 'm', 'i', 's', 't', '!'}
+	w := newHijackResponseWriter(serverConn, optimisticCapsule)
+
 	proxy := masque.Proxy{}
 	defer proxy.Close()
 
 	proxyErrCh := make(chan error, 1)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseProxyRequest(r, template)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		proxyErrCh <- proxy.Proxy(w, req)
-	})
-	server := http.Server{Handler: mux}
-	defer server.Close()
 	go func() {
-		_ = server.Serve(listener)
+		proxyErrCh <- proxy.Proxy(w, req)
 	}()
 
-	tcpConn, err := net.Dial("tcp", listener.Addr().String())
-	require.NoError(t, err)
-	defer tcpConn.Close()
-
-	targetAddr := targetConn.LocalAddr().(*net.UDPAddr)
-	reqStr := fmt.Sprintf(
-		"GET /masque?h=%s&p=%d HTTP/1.1\r\nHost: localhost:%d\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n",
-		targetAddr.IP.String(), targetAddr.Port, listener.Addr().(*net.TCPAddr).Port,
-	)
-	// Send the upgrade request and an optimistic DATAGRAM capsule in a single Write
-	// so the server's bufio.Reader buffers the optimistic datagram.
-	payload := append([]byte(reqStr), 0x00, 10, 0x00, 'o', 'p', 't', 'i', 'm', 'i', 's', 't', '!')
-	_, err = tcpConn.Write(payload)
-	require.NoError(t, err)
-
-	rsp, err := http.ReadResponse(bufio.NewReader(tcpConn), nil)
+	rsp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
 	require.NoError(t, err)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
@@ -524,9 +550,9 @@ func TestH1ClientConnRejectsInvalidUpgradeResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clientRaw, serverRaw := net.Pipe()
 			defer serverRaw.Close()
+			require.NoError(t, serverRaw.SetReadDeadline(time.Now().Add(time.Second)))
 
 			go func() {
-				defer serverRaw.Close()
 				_, err := http.ReadRequest(bufio.NewReader(serverRaw))
 				if err != nil {
 					return
@@ -551,7 +577,7 @@ func TestH1ClientConnRejectsInvalidUpgradeResponse(t *testing.T) {
 
 			// RFC 9298 Section 3.3: client MUST abort the connection on invalid 101 response.
 			_, readErr := serverRaw.Read(make([]byte, 1))
-			require.Error(t, readErr)
+			require.ErrorIs(t, readErr, io.EOF)
 		})
 	}
 }
@@ -561,49 +587,31 @@ func TestH1RejectsOptimisticDatagramsWithoutProxyStatus(t *testing.T) {
 	require.NoError(t, err)
 	defer targetConn.Close()
 
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	udpConn, err := net.DialUDP("udp", nil, targetConn.LocalAddr().(*net.UDPAddr))
 	require.NoError(t, err)
-	defer listener.Close()
 
-	template := uritemplate.MustNew(fmt.Sprintf("http://localhost:%d/masque?h={target_host}&p={target_port}", listener.Addr().(*net.TCPAddr).Port))
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	optimisticCapsule := []byte{0x00, 10, 0x00, 'o', 'p', 't', 'i', 'm', 'i', 's', 't', '!'}
+	w := newHijackResponseWriter(serverConn, optimisticCapsule)
+
 	proxy := masque.Proxy{}
 	defer proxy.Close()
 
+	req := &masque.ProxyRequest{
+		Host:       "localhost:8080",
+		Target:     targetConn.LocalAddr().String(),
+		ProtoMajor: 1,
+	}
+
 	proxyErrCh := make(chan error, 1)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/masque", func(w http.ResponseWriter, r *http.Request) {
-		req, err := masque.ParseProxyRequest(r, template)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		udpConn, err := net.DialUDP("udp", nil, targetConn.LocalAddr().(*net.UDPAddr))
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		proxyErrCh <- proxy.ProxyConnectedSocket(w, req, udpConn)
-	})
-	server := http.Server{Handler: mux}
-	defer server.Close()
 	go func() {
-		_ = server.Serve(listener)
+		proxyErrCh <- proxy.ProxyConnectedSocket(w, req, udpConn)
 	}()
 
-	tcpConn, err := net.Dial("tcp", listener.Addr().String())
-	require.NoError(t, err)
-	defer tcpConn.Close()
-
-	targetAddr := targetConn.LocalAddr().(*net.UDPAddr)
-	reqStr := fmt.Sprintf(
-		"GET /masque?h=%s&p=%d HTTP/1.1\r\nHost: localhost:%d\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n",
-		targetAddr.IP.String(), targetAddr.Port, listener.Addr().(*net.TCPAddr).Port,
-	)
-	payload := append([]byte(reqStr), 0x00, 10, 0x00, 'o', 'p', 't', 'i', 'm', 'i', 's', 't', '!')
-	_, err = tcpConn.Write(payload)
-	require.NoError(t, err)
-
-	rsp, err := http.ReadResponse(bufio.NewReader(tcpConn), nil)
+	rsp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
 	require.NoError(t, err)
 	defer rsp.Body.Close()
 	require.Equal(t, http.StatusBadRequest, rsp.StatusCode)
@@ -615,6 +623,37 @@ func TestH1RejectsOptimisticDatagramsWithoutProxyStatus(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expected proxy.ProxyConnectedSocket to return an error")
 	}
+}
+
+func TestH1ClientConnTrimmedUpgrade(t *testing.T) {
+	clientRaw, serverRaw := net.Pipe()
+	defer serverRaw.Close()
+
+	template := uritemplate.MustNew("http://localhost:8080/masque?h={target_host}&p={target_port}")
+
+	go func() {
+		defer serverRaw.Close()
+		_, err := http.ReadRequest(bufio.NewReader(serverRaw))
+		if err != nil {
+			return
+		}
+		_, _ = serverRaw.Write([]byte(
+			"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: connect-udp-custom\r\nCapsule-Protocol: ?1\r\n\r\n",
+		))
+	}()
+
+	clientConn := masque.NewH1ClientConn(clientRaw)
+	defer clientConn.Close()
+
+	req, err := masque.NewRequest(context.Background(), template, "127.0.0.1:1234")
+	require.NoError(t, err)
+	req.Header().Set("Upgrade", " connect-udp-custom ")
+
+	pconn, rsp, err := clientConn.Dial(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, rsp.StatusCode)
+	require.Equal(t, "connect-udp-custom", rsp.Header.Get("Upgrade"))
+	require.NoError(t, pconn.Close())
 }
 
 func TestH1ProxyClose(t *testing.T) {

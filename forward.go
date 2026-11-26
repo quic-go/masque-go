@@ -14,15 +14,18 @@ import (
 
 const datagramCapsuleType = 0x00
 
+// DatagramSender sends HTTP Datagrams and can be closed.
 type DatagramSender interface {
 	SendDatagram(b []byte) error
 	io.Closer
 }
 
+// DatagramReceiver receives HTTP Datagrams.
 type DatagramReceiver interface {
 	ReceiveDatagram(ctx context.Context) ([]byte, error)
 }
 
+// DatagramReceiverCanceller is a DatagramReceiver whose read side can be cancelled.
 type DatagramReceiverCanceller interface {
 	DatagramReceiver
 	CancelRead(quic.StreamErrorCode)
@@ -63,7 +66,7 @@ func isCleanShutdownError(err error) bool {
 // `str` indicates Datagram support if non-nil.
 func forwardUDP(str DatagramSendReceiver, w io.WriteCloser, r io.ReadCloser, conn net.Conn) error {
 	var wg sync.WaitGroup
-	var readErr error
+	var readErr, sendErr, writeErr error
 	if str != nil {
 		wg.Add(2)
 		go func() {
@@ -78,7 +81,11 @@ func forwardUDP(str DatagramSendReceiver, w io.WriteCloser, r io.ReadCloser, con
 			defer wg.Done()
 			if err := proxyConnSend(conn, http3DatagramReceiver{str}); err != nil && !isCleanShutdownError(err) {
 				log.Printf("proxying datagrams to %s failed: %v", conn.RemoteAddr(), err)
+				sendErr = err
 			}
+			r.Close()
+			str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))
+			conn.Close()
 		}()
 		// discard all capsules sent on the request stream
 		if err := skipCapsules(r); err != nil && !isCleanShutdownError(err) && !errors.Is(err, io.EOF) {
@@ -86,14 +93,13 @@ func forwardUDP(str DatagramSendReceiver, w io.WriteCloser, r io.ReadCloser, con
 			readErr = err
 		}
 	} else {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := udpToCapsules(w, conn); err != nil && !isCleanShutdownError(err) {
 				log.Printf("writing to HTTP stream failed: %v", err)
+				writeErr = err
 			}
 			r.Close()
-		}()
+		})
 
 		// The remote peer can always choose to send capsules.
 		if err := capsulesToUDP(conn, r); err != nil && !isCleanShutdownError(err) {
@@ -105,7 +111,13 @@ func forwardUDP(str DatagramSendReceiver, w io.WriteCloser, r io.ReadCloser, con
 
 	conn.Close()
 	wg.Wait()
-	return readErr
+	if readErr != nil {
+		return readErr
+	}
+	if sendErr != nil {
+		return sendErr
+	}
+	return writeErr
 }
 
 func capsulesToUDP(conn io.Writer, body io.Reader) error {
@@ -218,9 +230,14 @@ func (p *packetConnWrapper) Close() error {
 // When the PacketConn is closed, the request and response streams will be closed.
 func ProxiedPacketConn(str DatagramSendReceiver, req io.WriteCloser, rsp io.ReadCloser, laddr, raddr net.Addr) net.PacketConn {
 	left, right := net.Pipe()
+	reqCloser := &sharedCloser{c: req}
+	reqWrapped := struct {
+		io.Writer
+		io.Closer
+	}{req, reqCloser}
 	wrapper := &packetConnWrapper{
 		Conn:       left,
-		req:        req,
+		req:        reqCloser,
 		rsp:        rsp,
 		done:       make(chan struct{}),
 		localAddr:  laddr,
@@ -228,9 +245,9 @@ func ProxiedPacketConn(str DatagramSendReceiver, req io.WriteCloser, rsp io.Read
 	}
 
 	go func() {
-		wrapper.readErr = forwardUDP(str, req, rsp, right)
+		wrapper.readErr = forwardUDP(str, reqWrapped, rsp, right)
 		close(wrapper.done)
-		req.Close()
+		reqCloser.Close()
 		if str != nil {
 			str.Close()
 			str.CancelRead(quic.StreamErrorCode(http3.ErrCodeNoError))

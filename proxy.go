@@ -236,12 +236,12 @@ func (s *Proxy) proxyH1(w http.ResponseWriter, conn *net.UDPConn) error {
 		*bufio.Reader
 		io.Closer
 	}{buf.Reader, closer}
-	_ = forwardUDP(nil, h1Writer, h1Reader, conn)
+	err = forwardUDP(nil, h1Writer, h1Reader, conn)
 
 	s.mx.Lock()
 	delete(s.closers, entry)
 	s.mx.Unlock()
-	return nil
+	return err
 }
 
 // ProxyConnectedSocket proxies a request on a connected UDP socket.

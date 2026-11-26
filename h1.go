@@ -75,7 +75,7 @@ func (c *H1ClientConn) Dial(req *Request) (net.PacketConn, *http.Response, error
 		h1Req.Header = make(http.Header)
 	}
 	h1Req.Header.Set("Connection", "Upgrade")
-	upgradeProto := h1Req.Header.Get("Upgrade")
+	upgradeProto := strings.Trim(h1Req.Header.Get("Upgrade"), " \t")
 	// Allow users to override the upgrade header in case they are experimenting with different
 	// proxy implementations.
 	if upgradeProto == "" {
@@ -139,6 +139,7 @@ func (c *H1ClientConn) Dial(req *Request) (net.PacketConn, *http.Response, error
 	return ProxiedPacketConn(nil, reqWriter, rspReader, laddr, remoteAddr(rsp, req.target)), rsp, nil
 }
 
+// Close closes the underlying HTTP/1.1 connection.
 func (c *H1ClientConn) Close() error {
 	if c.conn != nil {
 		return c.conn.Close()
@@ -188,14 +189,12 @@ func (t *H1Transport) dial(ctx context.Context, u *url.URL) (net.Conn, error) {
 				ServerName: u.Hostname(),
 				NextProtos: []string{"http/1.1"},
 			}
-		} else if tlsConf.ServerName == "" || len(tlsConf.NextProtos) == 0 {
+		} else {
 			c := tlsConf.Clone()
 			if c.ServerName == "" {
 				c.ServerName = u.Hostname()
 			}
-			if len(c.NextProtos) == 0 {
-				c.NextProtos = []string{"http/1.1"}
-			}
+			c.NextProtos = []string{"http/1.1"}
 			tlsConf = c
 		}
 		tlsClient := tls.Client(rawConn, tlsConf)

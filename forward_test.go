@@ -2,6 +2,8 @@ package masque_test
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net"
 	"sync/atomic"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/quic-go/masque-go"
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -116,8 +119,9 @@ func TestCapsulesToUDP(t *testing.T) {
 
 func TestCapsulesToUDPErrors(t *testing.T) {
 	tests := []struct {
-		name   string
-		stream []byte
+		name    string
+		stream  []byte
+		wantErr string
 	}{
 		{
 			name:   "empty DATAGRAM capsule missing Context ID",
@@ -130,7 +134,8 @@ func TestCapsulesToUDPErrors(t *testing.T) {
 		{
 			name: "Context ID 0 payload > 65527 bytes",
 			// Length = 1 (Context ID) + 65528 = 65529 (0x0000fff9 -> 0x8000fff9)
-			stream: []byte{0x00, 0x80, 0x00, 0xff, 0xf9, 0x00},
+			stream:  []byte{0x00, 0x80, 0x00, 0xff, 0xf9, 0x00},
+			wantErr: "masque: UDP datagram payload too large (65528 > 65527)",
 		},
 	}
 
@@ -150,8 +155,72 @@ func TestCapsulesToUDPErrors(t *testing.T) {
 			_, _, err := conn.ReadFrom(make([]byte, 1500))
 			require.Error(t, err)
 			require.NotErrorIs(t, err, io.EOF)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			}
 		})
 	}
+}
+
+type failingDatagramStream struct {
+	recvErr error
+	closed  chan struct{}
+}
+
+func (s *failingDatagramStream) SendDatagram([]byte) error { return nil }
+func (s *failingDatagramStream) Close() error              { return nil }
+func (s *failingDatagramStream) CancelRead(quic.StreamErrorCode) {
+	select {
+	case <-s.closed:
+	default:
+		close(s.closed)
+	}
+}
+func (s *failingDatagramStream) ReceiveDatagram(context.Context) ([]byte, error) {
+	return nil, s.recvErr
+}
+
+func TestProxiedPacketConnPropagatesDatagramSendError(t *testing.T) {
+	rspReader, rspWriter := io.Pipe()
+	defer rspWriter.Close()
+	reqReader, reqWriter := io.Pipe()
+	defer reqReader.Close()
+
+	wantErr := errors.New("malformed datagram")
+	str := &failingDatagramStream{
+		recvErr: wantErr,
+		closed:  make(chan struct{}),
+	}
+
+	conn := masque.ProxiedPacketConn(str, reqWriter, rspReader, nil, nil)
+	defer conn.Close()
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	_, _, err := conn.ReadFrom(make([]byte, 1500))
+	require.ErrorIs(t, err, wantErr)
+}
+
+type failingWriteCloser struct {
+	err error
+}
+
+func (f failingWriteCloser) Write([]byte) (int, error) { return 0, f.err }
+func (f failingWriteCloser) Close() error              { return nil }
+
+func TestProxiedPacketConnPropagatesCapsuleWriteError(t *testing.T) {
+	rspReader, rspWriter := io.Pipe()
+	defer rspWriter.Close()
+
+	wantErr := errors.New("capsule write failed")
+	conn := masque.ProxiedPacketConn(nil, failingWriteCloser{err: wantErr}, rspReader, nil, nil)
+	defer conn.Close()
+
+	_, err := conn.WriteTo([]byte("hello"), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5678})
+	require.NoError(t, err)
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+	_, _, err = conn.ReadFrom(make([]byte, 1500))
+	require.ErrorIs(t, err, wantErr)
 }
 
 func testCapsulesToUDP(t *testing.T, stream []byte, expected [][]byte) {

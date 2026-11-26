@@ -87,7 +87,7 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 	case 2:
 		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusNotImplemented,
-			Err:        fmt.Errorf("HTTP/2 is not supported"),
+			Err:        fmt.Errorf("unsupported HTTP/2 request"),
 		}
 	default:
 		return nil, &ProxyRequestParseError{
@@ -100,7 +100,7 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		len(r.TransferEncoding) > 0 || len(r.Header.Values("Transfer-Encoding")) > 0 {
 		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusBadRequest,
-			Err:        fmt.Errorf("Capsule Protocol messages must not contain Content-Length, Content-Type, or Transfer-Encoding"),
+			Err:        fmt.Errorf("capsule protocol messages must not contain Content-Length, Content-Type, or Transfer-Encoding"),
 		}
 	}
 	if r.Host != u.Host {
@@ -166,7 +166,7 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 
 func hasHeaderToken(h http.Header, key, token string) bool {
 	for _, v := range h.Values(key) {
-		for _, part := range strings.Split(v, ",") {
+		for part := range strings.SplitSeq(v, ",") {
 			if strings.EqualFold(strings.TrimSpace(part), token) {
 				return true
 			}
