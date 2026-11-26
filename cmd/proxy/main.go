@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/quic-go/masque-go"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/yosida95/uritemplate/v3"
 )
@@ -24,7 +26,11 @@ func main() {
 	flag.StringVar(&certFile, "c", "", "cert file")
 	flag.Parse()
 
-	if templateStr == "" || bind == "" || keyFile == "" || certFile == "" {
+	if templateStr == "" || bind == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
+	if (certFile == "") != (keyFile == "") {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -33,20 +39,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid template: %v", err)
 	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		log.Fatalf("failed to load certificate: %v", err)
-	}
-	tlsConf := http3.ConfigureTLSConfig(&tls.Config{
-		Certificates: []tls.Certificate{cert},
-	})
-	server := http3.Server{
-		Addr:            bind,
-		TLSConfig:       tlsConf,
-		EnableDatagrams: true,
-		Logger:          slog.Default(),
-	}
-	defer server.Close()
 	proxy := masque.Proxy{}
 	// parse the template to extract the path for the HTTP handler
 	u, err := url.Parse(templateStr)
@@ -63,9 +55,53 @@ func main() {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		proxy.Proxy(w, req)
+		if err = proxy.Proxy(w, req); err != nil {
+			log.Println(err)
+		}
 	})
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("failed to run proxy: %v", err)
+
+	if certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			log.Fatalf("failed to load certificate: %v", err)
+		}
+		go func() {
+			h3tlsConf := http3.ConfigureTLSConfig(&tls.Config{
+				Certificates: []tls.Certificate{cert},
+			})
+			h3server := http3.Server{
+				Addr:            bind,
+				TLSConfig:       h3tlsConf,
+				EnableDatagrams: true,
+				QUICConfig: &quic.Config{
+					EnableDatagrams: true,
+					// The default initial packet size is 1280, resulting in an inner
+					// MTU estimate that is initially too small for some QUIC ServerInitials.
+					InitialPacketSize: 1500, // Clamped to 1452 in quic-go/config.go.
+				},
+				Logger: slog.Default(),
+			}
+			if err := h3server.ListenAndServe(); err != nil {
+				log.Fatalf("failed to run proxy in h3: %v", err)
+			}
+		}()
+	} else {
+		log.Println("no certificate provided, disabling HTTP/3")
+	}
+
+	h1server := http.Server{
+		Addr:              bind,
+		ReadHeaderTimeout: 10 * time.Second,
+		// Disable HTTP/2 so TLS clients negotiate HTTP/1.1.
+		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
+	}
+	if len(certFile) > 0 {
+		if err := h1server.ListenAndServeTLS(certFile, keyFile); err != nil {
+			log.Fatalf("failed to run encrypted proxy in HTTP/1.1: %v", err)
+		}
+	} else {
+		if err := h1server.ListenAndServe(); err != nil {
+			log.Fatalf("failed to run plaintext proxy in HTTP/1.1: %v", err)
+		}
 	}
 }

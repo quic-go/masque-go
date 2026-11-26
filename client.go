@@ -81,15 +81,15 @@ func (c *ClientConn) dial(req *Request, closeConn func() error) (*Conn, *http.Re
 		return nil, rsp, fmt.Errorf("masque: server responded with %d", rsp.StatusCode)
 	}
 
-	var raddr net.Addr
-	if udpAddr := nextHopAddr(rsp); udpAddr != nil {
-		raddr = udpAddr
-	} else {
-		raddr = net.Addr(masqueAddr{req.target})
-	}
-
 	keepStream = true
-	return newProxiedConn(rstr, masqueAddr{c.clientConn.LocalAddr().String()}, raddr, closeConn), rsp, nil
+	return newProxiedConn(rstr, masqueAddr{c.clientConn.LocalAddr().String()}, remoteAddr(rsp, req.target), closeConn), rsp, nil
+}
+
+func remoteAddr(rsp *http.Response, target string) net.Addr {
+	if udpAddr := nextHopAddr(rsp); udpAddr != nil {
+		return udpAddr
+	}
+	return masqueAddr{target}
 }
 
 // Extract the Proxy-Status next-hop value as a UDPAddr.

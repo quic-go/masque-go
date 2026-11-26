@@ -16,9 +16,12 @@ import (
 // ProxyRequest is the parsed CONNECT-UDP request returned from ParseProxyRequest.
 // Target is the target server that the client requests to connect to.
 // It can either be DNS name:port or an IP:port.
+// ProtoMajor is the HTTP major version of the request (1 for HTTP/1.1, 3 for HTTP/3).
+// A zero value defaults to HTTP/3 for backwards compatibility.
 type ProxyRequest struct {
-	Target string
-	Host   string
+	Target     string
+	Host       string
+	ProtoMajor int
 }
 
 // ProxyRequestParseError is returned from ParseProxyRequest if parsing the CONNECT-UDP request fails.
@@ -42,16 +45,62 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		}
 	}
 
-	if r.Method != http.MethodConnect {
-		return nil, &ProxyRequestParseError{
-			HTTPStatus: http.StatusMethodNotAllowed,
-			Err:        fmt.Errorf("expected CONNECT request, got %s", r.Method),
+	switch r.ProtoMajor {
+	case 1:
+		if r.ProtoMinor != 1 {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusHTTPVersionNotSupported,
+				Err:        fmt.Errorf("expected HTTP/1.1, got HTTP/%d.%d", r.ProtoMajor, r.ProtoMinor),
+			}
 		}
-	}
-	if r.Proto != requestProtocol {
+		if r.Method != http.MethodGet {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusMethodNotAllowed,
+				Err:        fmt.Errorf("expected GET request in HTTP/1.1, got %s", r.Method),
+			}
+		}
+		if !hasHeaderToken(r.Header, "Connection", "Upgrade") {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusBadRequest,
+				Err:        fmt.Errorf("expected Connection: Upgrade header in HTTP/1.1"),
+			}
+		}
+		if !hasHeaderToken(r.Header, "Upgrade", requestProtocol) {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusNotImplemented,
+				Err:        fmt.Errorf("unexpected protocol: %s", r.Header.Get("Upgrade")),
+			}
+		}
+	case 3:
+		if r.Method != http.MethodConnect {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusMethodNotAllowed,
+				Err:        fmt.Errorf("expected CONNECT request, got %s", r.Method),
+			}
+		}
+		if r.Proto != requestProtocol {
+			return nil, &ProxyRequestParseError{
+				HTTPStatus: http.StatusNotImplemented,
+				Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
+			}
+		}
+	case 2:
 		return nil, &ProxyRequestParseError{
 			HTTPStatus: http.StatusNotImplemented,
-			Err:        fmt.Errorf("unexpected protocol: %s", r.Proto),
+			Err:        fmt.Errorf("unsupported HTTP/2 request"),
+		}
+	default:
+		return nil, &ProxyRequestParseError{
+			HTTPStatus: http.StatusNotImplemented,
+			Err:        fmt.Errorf("unexpected HTTP version: %d", r.ProtoMajor),
+		}
+	}
+	if len(r.Header.Values("Content-Type")) > 0 ||
+		len(r.Header.Values("Content-Length")) > 0 || r.ContentLength > 0 ||
+		len(r.TransferEncoding) > 0 || len(r.Header.Values("Transfer-Encoding")) > 0 {
+		return nil, &ProxyRequestParseError{
+			HTTPStatus: http.StatusBadRequest,
+			Err:        fmt.Errorf("capsule protocol messages must not contain Content-Length, Content-Type, or Transfer-Encoding"),
 		}
 	}
 	if r.Host != u.Host {
@@ -109,7 +158,19 @@ func ParseProxyRequest(r *http.Request, template *uritemplate.Template) (*ProxyR
 		}
 	}
 	return &ProxyRequest{
-		Target: fmt.Sprintf("%s:%d", targetHost, targetPort),
-		Host:   r.Host,
+		Target:     fmt.Sprintf("%s:%d", targetHost, targetPort),
+		Host:       r.Host,
+		ProtoMajor: r.ProtoMajor,
 	}, nil
+}
+
+func hasHeaderToken(h http.Header, key, token string) bool {
+	for _, v := range h.Values(key) {
+		for part := range strings.SplitSeq(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }
